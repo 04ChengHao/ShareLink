@@ -40,6 +40,11 @@ Future<void> _toggle(
   if (next) {
     try {
       await ref.read(deviceServiceProvider).start();
+      // 连接开启后，立即对所有在线的已连接过设备触发自动重连，
+      // 避免因 _onPresence 幂等跳过而错过重连时机。
+      ref
+          .read(previouslyConnectedDevicesProvider.notifier)
+          .reconnectAllOnlineWhenEnabled();
     } on PermissionException {
       ref.read(connectionEnabledProvider.notifier).enabled = false;
       if (!context.mounted) return;
@@ -239,7 +244,12 @@ class _MobileHomeState extends ConsumerState<_MobileHome> {
     // 如果连接已开启，进入页面时自动启动服务
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (ref.read(connectionEnabledProvider)) {
-        ref.read(deviceServiceProvider).start().catchError((_) {});
+        ref.read(deviceServiceProvider).start().then((_) {
+          // 启动完成后立刻尝试重连在线设备
+          ref
+              .read(previouslyConnectedDevicesProvider.notifier)
+              .reconnectAllOnlineWhenEnabled();
+        }).catchError((_) {});
       }
     });
   }
@@ -520,7 +530,12 @@ class _DesktopHomeState extends ConsumerState<_DesktopHome> {
     // 如果连接已开启，进入页面时自动启动服务
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (ref.read(connectionEnabledProvider)) {
-        ref.read(deviceServiceProvider).start().catchError((_) {});
+        ref.read(deviceServiceProvider).start().then((_) {
+          // 启动完成后立刻尝试重连在线设备
+          ref
+              .read(previouslyConnectedDevicesProvider.notifier)
+              .reconnectAllOnlineWhenEnabled();
+        }).catchError((_) {});
       }
     });
   }

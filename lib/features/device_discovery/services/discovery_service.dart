@@ -210,16 +210,16 @@ class DiscoveryService {
         _devices[id] = device;
         _notify();
 
-        // 新设备首次出现时触发回调
+        // 新设备首次出现时触发搜索回调
         if (isNewDevice) {
           onDeviceDiscovered?.call(device);
-          // 新设备也视为"上线"事件，通知 DeviceService 同步已连接过设备状态
-          onDevicePresenceChanged?.call(device, true);
         }
-        // 离线设备重新上线时触发回调
-        if (isReappearance) {
-          onDevicePresenceChanged?.call(device, true);
-        }
+
+        // 始终触发 presence 上线事件。
+        // PreviouslyConnectedNotifier 可能因被动 WS 断开将设备标记为离线，
+        // 但 beacon 仍在到达说明设备实际在线，需要恢复在线状态。
+        // _onPresence 内部会判断是否需要实际更新状态（幂等）。
+        onDevicePresenceChanged?.call(device, true);
       } catch (e) {
         debugPrint('[Discovery] 解析 beacon 失败: $e');
       }

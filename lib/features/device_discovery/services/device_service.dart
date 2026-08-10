@@ -60,9 +60,11 @@ class DeviceService {
 
   /// 出站连接断开事件流（用于 UI 取消连接高亮）
   ///
-  /// 推送断开的 deviceId
-  final StreamController<String> _outboundDisconnectedController =
-      StreamController<String>.broadcast();
+  /// 推送 (deviceId, isPassive) 元组：
+  /// - isPassive=true：对端离线导致的被动断开
+  /// - isPassive=false：本端主动调用 disconnect
+  final StreamController<OutboundDisconnectEvent> _outboundDisconnectedController =
+      StreamController<OutboundDisconnectEvent>.broadcast();
 
   StreamSubscription? _discoverySub;
 
@@ -104,7 +106,7 @@ class DeviceService {
   Stream<DevicePresenceEvent> get presenceChanges => _presenceController.stream;
 
   /// 出站连接断开事件流
-  Stream<String> get outboundDisconnected =>
+  Stream<OutboundDisconnectEvent> get outboundDisconnected =>
       _outboundDisconnectedController.stream;
 
   /// 启动所有服务
@@ -242,9 +244,13 @@ class DeviceService {
   }
 
   /// ConnectionClient 回调：出站连接断开
-  void _onOutboundDisconnected(String deviceId) {
-    debugPrint('[DeviceService] 出站连接断开: $deviceId');
-    _outboundDisconnectedController.add(deviceId);
+  void _onOutboundDisconnected(String deviceId, bool isPassive) {
+    debugPrint(
+      '[DeviceService] 出站连接断开: $deviceId (passive=$isPassive)',
+    );
+    _outboundDisconnectedController.add(
+      OutboundDisconnectEvent(deviceId: deviceId, isPassive: isPassive),
+    );
   }
 
   /// 停止所有服务
@@ -323,5 +329,18 @@ class DevicePresenceEvent {
     required this.deviceId,
     required this.isOnline,
     required this.device,
+  });
+}
+
+/// 出站连接断开事件
+class OutboundDisconnectEvent {
+  final String deviceId;
+
+  /// true = 对端离线导致的被动断开；false = 本端主动断开
+  final bool isPassive;
+
+  const OutboundDisconnectEvent({
+    required this.deviceId,
+    required this.isPassive,
   });
 }

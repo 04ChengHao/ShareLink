@@ -15,8 +15,18 @@ class ConnectionClient {
   final Map<String, IOWebSocketChannel> _outbound = {};
   final Map<String, Future<ConnectResult>> _pending = {};
 
-  /// 出站连接断开回调（deviceId）
-  void Function(String deviceId)? onDisconnected;
+  /// 正在主动断开的设备 ID 集合
+  ///
+  /// 用于区分主动断开（用户点击断开 / 移除设备）和被动断开（对端离线）。
+  /// 主动断开时，在 [disconnect] 中先加入此集合，再关闭 channel，
+  /// 这样 stream 的 onDone 回调可以据此判断断开类型。
+  final Set<String> _activeDisconnecting = {};
+
+  /// 出站连接断开回调（deviceId, isPassive）
+  ///
+  /// [isPassive]=true 表示对端离线导致的被动断开；
+  /// [isPassive]=false 表示本端主动调用 [disconnect]。
+  void Function(String deviceId, bool isPassive)? onDisconnected;
 
   /// 发起 WebSocket 连接
   Future<ConnectResult> connect({
@@ -149,12 +159,17 @@ class ConnectionClient {
         onError: (e) {
           debugPrint('[ConnectionClient] 连接断开(错误): ${device.name} - $e');
           _outbound.remove(device.id);
-          onDisconnected?.call(device.id);
+          final isPassive = _activeDisconnecting.remove(device.id) == false;
+          onDisconnected?.call(device.id, isPassive);
         },
         onDone: () {
-          debugPrint('[ConnectionClient] 连接断开(完成): ${device.name}');
+          final isPassive = _activeDisconnecting.remove(device.id) == false;
+          debugPrint(
+            '[ConnectionClient] 连接断开(完成): ${device.name} '
+            '(passive=$isPassive)',
+          );
           _outbound.remove(device.id);
-          onDisconnected?.call(device.id);
+          onDisconnected?.call(device.id, isPassive);
         },
         cancelOnError: true,
       );
@@ -168,8 +183,10 @@ class ConnectionClient {
     }
   }
 
-  /// 断开指定设备连接
+  /// 断开指定设备连接（主动断开）
   Future<void> disconnect(String deviceId) async {
+    // 标记为主动断开，stream 的 onDone 回调据此判断 isPassive=false
+    _activeDisconnecting.add(deviceId);
     final channel = _outbound.remove(deviceId);
     await channel?.sink.close();
   }
@@ -177,9 +194,11 @@ class ConnectionClient {
   /// 指定设备是否已连接
   bool isConnected(String deviceId) => _outbound.containsKey(deviceId);
 
-  /// 关闭所有出站连接
+  /// 关闭所有出站连接（主动断开）
   Future<void> disconnectAll() async {
     final channels = _outbound.values.toList();
+    // 全部标记为主动断开
+    _activeDisconnecting.addAll(_outbound.keys);
     _outbound.clear();
     for (final ch in channels) {
       await ch.sink.close();

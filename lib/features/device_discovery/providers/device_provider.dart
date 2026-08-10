@@ -13,7 +13,8 @@ import '../services/previously_connected_store.dart';
 
 export '../models/device.dart';
 export '../services/connection_server.dart' show ConnectResult;
-export '../services/device_service.dart' show DevicePresenceEvent;
+export '../services/device_service.dart'
+    show DevicePresenceEvent, OutboundDisconnectEvent;
 
 /// 已连接过设备（持久化）
 ///
@@ -30,7 +31,7 @@ final previouslyConnectedDevicesProvider =
 class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
   late final PreviouslyConnectedStore _store;
   StreamSubscription<DevicePresenceEvent>? _presenceSub;
-  StreamSubscription<String>? _outboundSub;
+  StreamSubscription<OutboundDisconnectEvent>? _outboundSub;
 
   @override
   List<Device> build() {
@@ -53,18 +54,28 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
     final idx = state.indexWhere((d) => d.id == event.deviceId);
     if (idx == -1) return; // 不是已连接过的设备，忽略
 
-    final updated = List<Device>.from(state);
-    final current = updated[idx];
+    final current = state[idx];
     if (event.isOnline) {
       // 对端刚启动时 deviceInfo 可能尚未加载，beacon 中 name 可能为 "未知设备"。
       // 此时保留已持久化的好名称，避免上线瞬间名称丢失。
       final incomingName = event.device.name;
       final shouldUpdateName =
           incomingName.isNotEmpty && incomingName != '未知设备';
+      final newName = shouldUpdateName ? incomingName : current.name;
+
+      // 幂等检查：若设备已在线且关键字段未变化，跳过状态更新（避免每 2s 刷一次）
+      if (current.isOnline &&
+          current.ip == event.device.ip &&
+          current.name == newName &&
+          current.hasPassword == event.device.hasPassword) {
+        return;
+      }
+
+      final updated = List<Device>.from(state);
       updated[idx] = current.copyWith(
         isOnline: true,
         ip: event.device.ip,
-        name: shouldUpdateName ? incomingName : current.name,
+        name: newName,
         hasPassword: event.device.hasPassword,
         lastSeenAt: event.device.lastSeenAt,
       );
@@ -77,9 +88,28 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
       // 自动连接：已连接过设备上线后，如果连接已开启且当前未连接，自动重连
       _autoConnect(event.device);
     } else {
+      // 幂等检查：已经离线则跳过
+      if (!current.isOnline) return;
+      final updated = List<Device>.from(state);
       updated[idx] = current.copyWith(isOnline: false);
       state = updated;
       debugPrint('[PrevConnected] 设备离线: ${current.name}');
+    }
+  }
+
+  /// 连接开启后，立刻对所有在线的已连接过设备触发自动重连。
+  ///
+  /// 解决场景：用户先关闭连接开关（WS 断开、connectionStates 重置为 unconnected），
+  /// 再重新打开开关。此时设备的 beacon 仍在持续到达，但 _onPresence 的
+  /// 幂等检查会跳过"已在线"设备的状态更新，导致 _autoConnect 不会被触发。
+  /// 因此在连接开启后主动遍历一次 state，对仍标记为在线的设备发起自动重连。
+  void reconnectAllOnlineWhenEnabled() {
+    if (!ref.read(connectionEnabledProvider)) return;
+    final targets = state.where((d) => d.isOnline).toList();
+    if (targets.isEmpty) return;
+    debugPrint('[PrevConnected] 连接已开启，尝试自动重连 ${targets.length} 台在线设备');
+    for (final device in targets) {
+      _autoConnect(device);
     }
   }
 
@@ -121,14 +151,21 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
     });
   }
 
-  void _onOutboundDisconnected(String deviceId) {
+  void _onOutboundDisconnected(OutboundDisconnectEvent event) {
+    final deviceId = event.deviceId;
     // 出站连接断开时取消连接高亮
     ref
         .read(connectionStatesProvider.notifier)
         .set(deviceId, DeviceConnectionState.unconnected);
 
-    // WebSocket 断开通常意味着对端已不可达（如关闭 App / 网络中断），
-    // 立即标记离线，避免等待 beacon 10s 超时才显示离线。
+    // 仅被动断开（对端离线）时才标记离线。
+    // 主动断开（用户点击断开 / 移除设备）不改变在线状态，设备仍在线。
+    if (!event.isPassive) {
+      debugPrint('[PrevConnected] 主动断开，保持在线状态: $deviceId');
+      return;
+    }
+
+    // 对端离线导致 WS 断开，立即标记离线。
     // 若设备实际仍在线（仍在发 beacon），下个 beacon（≤2s）会重新标记为在线。
     final idx = state.indexWhere((d) => d.id == deviceId);
     if (idx != -1 && state[idx].isOnline) {
@@ -136,7 +173,7 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
       updated[idx] = updated[idx].copyWith(isOnline: false);
       state = updated;
       debugPrint(
-        '[PrevConnected] 出站连接断开，立即标记离线: ${updated[idx].name}',
+        '[PrevConnected] 对端离线，立即标记离线: ${updated[idx].name}',
       );
     }
   }
@@ -217,9 +254,10 @@ final devicePresenceProvider = StreamProvider<DevicePresenceEvent>((ref) {
 });
 
 /// 出站连接断开事件流（仅用于调试/扩展，业务同步已在 PreviouslyConnectedNotifier 内部完成）
-final outboundDisconnectedProvider = StreamProvider<String>((ref) {
-  return ref.read(deviceServiceProvider).outboundDisconnected;
-});
+final outboundDisconnectedProvider =
+    StreamProvider<OutboundDisconnectEvent>((ref) {
+      return ref.read(deviceServiceProvider).outboundDisconnected;
+    });
 
 /// 所有设备的连接状态映射
 final connectionStatesProvider =

@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/utils/device_icon_utils.dart';
 import '../../../core/utils/platform_utils.dart';
 import '../../../shared/widgets/glass_dropdown.dart';
 import '../../../shared/widgets/neuomorphic_style.dart';
-import '../../device_discovery/providers/device_provider.dart';
+import '../../device_discovery/models/device.dart';
 import '../providers/file_browser_provider.dart';
 import '../widgets/file_list_item.dart';
 
@@ -19,6 +20,18 @@ class FileBrowserView extends ConsumerWidget {
         ? _DesktopFileBrowser(ref: ref)
         : const _MobileFileBrowser();
   }
+}
+
+/// 根据当前选中的设备名称解析对应的设备图标
+IconData _resolveDeviceIcon(String? deviceName, List<Device> connectedDevices) {
+  if (deviceName == null || connectedDevices.isEmpty) {
+    return Icons.computer; // 本机
+  }
+  final device = connectedDevices.firstWhere(
+    (d) => d.name == deviceName,
+    orElse: () => connectedDevices.first,
+  );
+  return deviceTypeIcon(device.typeIcon);
 }
 
 // ---------------------------------------------------------------------------
@@ -36,7 +49,8 @@ class _DesktopFileBrowser extends ConsumerWidget {
     final files = ref.watch(fileListProvider);
     final selectedCategory = ref.watch(fileCategoryProvider);
     const categories = ['图片', '视频', '文本', 'Word', 'PPT'];
-    final selectedDevice = ref.watch(selectedDeviceProvider);
+    final effectiveDevice = ref.watch(effectiveSelectedDeviceProvider);
+    final connectedDevices = ref.watch(connectedDevicesProvider);
 
     return Scaffold(
       body: SafeArea(
@@ -79,9 +93,27 @@ class _DesktopFileBrowser extends ConsumerWidget {
                         ),
                       ),
                       const SizedBox(height: 8),
+                      // 本机（默认选项）
                       _SidebarDeviceItem(
-                        name: selectedDevice ?? '本机',
-                        isSelected: true,
+                        name: '本机',
+                        icon: Icons.computer,
+                        isSelected: effectiveDevice == null,
+                        onTap: () {
+                          ref.read(selectedDeviceProvider.notifier).device =
+                              '本机';
+                        },
+                      ),
+                      // 当前已连接的设备列表
+                      ...connectedDevices.map(
+                        (d) => _SidebarDeviceItem(
+                          name: d.name,
+                          icon: deviceTypeIcon(d.typeIcon),
+                          isSelected: effectiveDevice == d.name,
+                          onTap: () {
+                            ref.read(selectedDeviceProvider.notifier).device =
+                                d.name;
+                          },
+                        ),
                       ),
                       const SizedBox(height: 20),
                       Text(
@@ -123,8 +155,12 @@ class _DesktopFileBrowser extends ConsumerWidget {
                     children: [
                       // 路径：设备__分类
                       _PathBreadcrumb(
-                        device: selectedDevice ?? '本机',
+                        device: effectiveDevice ?? '本机',
                         category: selectedCategory,
+                        deviceIcon: _resolveDeviceIcon(
+                          effectiveDevice,
+                          connectedDevices,
+                        ),
                       ),
                       const SizedBox(height: 16),
                       Expanded(
@@ -180,8 +216,8 @@ class _MobileFileBrowser extends ConsumerWidget {
     final files = ref.watch(fileListProvider);
     final selectedCategory = ref.watch(fileCategoryProvider);
     const categories = ['图片', '视频', '文本', 'Word', 'PPT'];
-    final selectedDevice = ref.watch(selectedDeviceProvider);
-    final devices = ref.watch(previouslyConnectedDevicesProvider);
+    final effectiveDevice = ref.watch(effectiveSelectedDeviceProvider);
+    final connectedDevices = ref.watch(connectedDevicesProvider);
     final colors = AppColorScheme.of(context);
 
     return Scaffold(
@@ -194,25 +230,50 @@ class _MobileFileBrowser extends ConsumerWidget {
             SizedBox(
               width: 140,
               child: GlassDropdownField<String>(
-                value: selectedDevice ?? '本机',
-                prefixIcon: Icons.computer,
+                value: effectiveDevice ?? '本机',
                 items: [
                   DropdownMenuItem<String>(
                     value: '本机',
-                    child: Text(
-                      '本机',
-                      style: TextStyle(fontSize: 13, color: colors.textPrimary),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.computer,
+                          size: 16,
+                          color: colors.iconSecondary,
+                        ),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            '本机',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 13, color: colors.textPrimary),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  ...devices.map(
+                  ...connectedDevices.map(
                     (d) => DropdownMenuItem<String>(
                       value: d.name,
-                      child: Text(
-                        d.name,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: colors.textPrimary,
-                        ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            deviceTypeIcon(d.typeIcon),
+                            size: 16,
+                            color: colors.iconSecondary,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              d.name,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: colors.textPrimary,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -280,9 +341,16 @@ class _MobileFileBrowser extends ConsumerWidget {
 /// 侧边栏设备项
 class _SidebarDeviceItem extends StatefulWidget {
   final String name;
+  final IconData icon;
   final bool isSelected;
+  final VoidCallback? onTap;
 
-  const _SidebarDeviceItem({required this.name, required this.isSelected});
+  const _SidebarDeviceItem({
+    required this.name,
+    required this.icon,
+    required this.isSelected,
+    this.onTap,
+  });
 
   @override
   State<_SidebarDeviceItem> createState() => _SidebarDeviceItemState();
@@ -300,49 +368,66 @@ class _SidebarDeviceItemState extends State<_SidebarDeviceItem> {
     return MouseRegion(
       onEnter: (_) => setState(() => _hovering = true),
       onExit: (_) => setState(() => _hovering = false),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 4),
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
-        // Stack: 背景层在下，图标+文字在上，避免被白色覆盖
-        child: Stack(
-          children: [
-            // 背景层：选中蓝色 / 悬浮白色 / 无则透明（填满整个区域）
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: widget.isSelected
-                      ? colors.primaryWithAlpha(0.1)
-                      : showHover
-                      ? (isDark
-                            ? Colors.white.withValues(alpha: 0.12)
-                            : Colors.white)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 4),
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
+          // Stack: 背景层在下，图标+文字在上，避免被白色覆盖
+          child: Stack(
+            children: [
+              // 背景层：选中蓝色 / 悬浮白色 / 无则透明（填满整个区域）
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: widget.isSelected
+                        ? colors.primaryWithAlpha(0.1)
+                        : showHover
+                        ? (isDark
+                              ? Colors.white.withValues(alpha: 0.12)
+                              : Colors.white)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
               ),
-            ),
-            // 内容层：图标 + 文字（带内边距，与胶囊边缘保持间距）
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
-                children: [
-                  Icon(Icons.computer, size: 20, color: colors.iconActive),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      widget.name,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: colors.textPrimary,
+              // 内容层：图标 + 文字（带内边距，与胶囊边缘保持间距）
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      widget.icon,
+                      size: 20,
+                      color: widget.isSelected
+                          ? colors.iconActive
+                          : colors.iconSecondary,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        widget.name,
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: widget.isSelected
+                              ? FontWeight.w600
+                              : FontWeight.w500,
+                          color: widget.isSelected
+                              ? colors.iconActive
+                              : colors.textPrimary,
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -445,8 +530,13 @@ class _SidebarCategoryItemState extends State<_SidebarCategoryItem> {
 class _PathBreadcrumb extends StatelessWidget {
   final String device;
   final String category;
+  final IconData deviceIcon;
 
-  const _PathBreadcrumb({required this.device, required this.category});
+  const _PathBreadcrumb({
+    required this.device,
+    required this.category,
+    required this.deviceIcon,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -454,7 +544,7 @@ class _PathBreadcrumb extends StatelessWidget {
     final theme = Theme.of(context);
     return Row(
       children: [
-        Icon(Icons.computer, size: 16, color: colors.iconSecondary),
+        Icon(deviceIcon, size: 16, color: colors.iconSecondary),
         const SizedBox(width: 6),
         Text(
           device,
