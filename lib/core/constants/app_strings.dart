@@ -36,6 +36,35 @@ class AppStrings {
   static const String categoryText = '文本';
   static const String categoryWord = 'Word';
   static const String categoryPpt = 'PPT';
+  static const String categoryExcel = '表格';
+  static const String categoryPdf = 'PDF';
+  static const String categoryAudio = '音频';
+  static const String categoryArchive = '压缩包';
+  static const String categoryAll = '全部';
+
+  // 文件 - 排序
+  static const String sortByName = '文件名';
+  static const String sortByTime = '时间轴';
+  static const String sortBySize = '大小排序';
+  static const String filterLabel = '筛选条件';
+
+  // 文件 - 布局
+  static const String layoutSingleColumn = '单列';
+  static const String layoutDoubleColumn = '双列';
+  static const String categoryDisplayDropdown = '下拉框';
+  static const String categoryDisplayList = '横向列表';
+
+  // 文件 - 添加分类
+  static const String addCategory = '添加分类';
+  static const String categoryName = '分类名称';
+  static const String categoryIcon = '分类图标';
+  static const String fileType = '文件类型';
+  static const String selectAllFiles = '全选';
+  static const String selectAllFilesSub = '匹配所有文件类型';
+  static const String categoryNameHint = '请输入分类名称';
+  static const String fileTypeHint = '搜索或输入文件后缀名';
+  static const String saveCategory = '保存';
+  static const String deleteCategory = '删除分类';
 
   // 设置
   static const String settingsTitle = '设置';
@@ -78,9 +107,28 @@ class AppStrings {
 
   // 设置 - 共享内容
   static const String sharedAlbum = '相册';
-  static const String sharedAlbumSub = '共享设备上的相册内容';
+  static const String sharedAlbumSub = '共享相册和相机中的所有图片';
+  static const String sharedMusic = '音乐';
+  static const String sharedMusicSub = '共享设备上的音乐文件';
+  static const String sharedDocuments = '文档';
+  static const String sharedDocumentsSub = '共享设备上的文档文件';
+  static const String sharedDownloads = '下载';
+  static const String sharedDownloadsSub = '共享设备上的下载文件';
   static const String sharedFolder = '文件夹';
-  static const String sharedFolderSub = '共享设备上的文件夹';
+  static const String sharedFolderSub = '共享指定文件夹';
+
+  // 设置 - 共享内容 - 文件夹管理
+  static const String addFolder = '添加文件夹';
+  static const String removeFolder = '删除';
+  static const String noFolders = '暂无共享文件夹';
+  static const String selectFolder = '选择要共享的文件夹';
+  static const String selectThisFolder = '选择此文件夹';
+  static const String parentDir = '上一级';
+
+  // 设置 - 共享内容 - 权限
+  static const String permissionDeniedTitle = '需要权限';
+  static const String permissionPhotosDesc = '需要相册访问权限才能共享图片，请在设置中开启相关权限';
+  static const String permissionStorageDesc = '需要存储访问权限才能共享文件，请在设置中开启相关权限';
 
   // 设备连接
   static const String connecting = '连接中...';

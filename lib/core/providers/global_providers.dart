@@ -19,8 +19,10 @@ class StorageKeys {
   static const clipboardSync = 'clipboard_sync';
   static const sharedAlbum = 'shared_album';
   static const sharedFolder = 'shared_folder';
+  static const sharedContent = 'shared_content';
   static const deviceId = 'device_id';
   static const previouslyConnectedDevices = 'previously_connected_devices';
+  static const customCategories = 'custom_categories';
 }
 
 // =============================================================================

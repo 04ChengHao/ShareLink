@@ -61,6 +61,12 @@ dependencies:
   # 日志
   logger: ^2.7.0
 
+  # 文件/目录选择器（共享文件夹选择）
+  file_picker: ^12.0.0-beta.1
+
+  # 权限请求（相册/存储等运行时权限）
+  permission_handler: ^12.0.0+1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

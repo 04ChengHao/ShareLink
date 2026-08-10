@@ -10,8 +10,9 @@ import '../../../core/utils/platform_utils.dart';
 import '../../../shared/widgets/glass_dropdown.dart';
 import '../../../shared/widgets/glass_switch.dart';
 import '../../../shared/widgets/neuomorphic_style.dart';
-import '../providers/settings_provider.dart';
 import '../widgets/password_input_field.dart';
+import '../widgets/shared_content_drawer.dart';
+import '../widgets/shared_content_sheet.dart';
 
 class SettingsView extends ConsumerWidget {
   const SettingsView({super.key});
@@ -89,7 +90,7 @@ class _MobileSettingsView extends ConsumerWidget {
             const SizedBox(height: 20),
             _buildSectionTitle(context, AppStrings.settingsShared),
             _NeuItemCard(
-              onTap: () => _showSharedContentSheet(ref),
+              onTap: () => _showSharedContentSheet(context, ref),
               child: _NeuTapContent(
                 leading: const _SharedContentIcon(),
                 title: AppStrings.sharedContent,
@@ -357,7 +358,7 @@ class _DesktopSharedSection extends ConsumerWidget {
         ),
         const SizedBox(height: 24),
         _NeuItemCard(
-          onTap: () => _showSharedContentSheet(ref),
+          onTap: () => _showSharedContentSheet(context, ref),
           child: _NeuTapContent(
             leading: const _SharedContentIcon(),
             title: AppStrings.sharedContent,
@@ -876,25 +877,34 @@ Widget _buildSectionTitle(BuildContext context, String title) {
   );
 }
 
-/// 使用 unified_popups 显示共享内容 Sheet（可拖拽、默认半屏高度）
-void _showSharedContentSheet(WidgetRef ref) {
-  Pop.sheet<void>(
-    SheetConfig<void>(
-      direction: SheetDirection.bottom,
-      header: const SheetHeaderConfig(
-        title: AppStrings.sharedContent,
-        showCloseButton: true,
+/// 显示共享内容弹窗（根据平台区分：手机端 Sheet / 桌面端右侧抽屉）
+void _showSharedContentSheet(BuildContext context, WidgetRef ref) {
+  if (PlatformUtils.isDesktop) {
+    // 桌面端：从右侧弹出的抽屉
+    showSharedContentDesktopDrawer(context);
+  } else {
+    // 手机端：可拖拽底部 Sheet，默认 2/3 高度，最高到顶
+    Pop.sheet<void>(
+      SheetConfig<void>(
+        direction: SheetDirection.bottom,
+        header: const SheetHeaderConfig(
+          title: AppStrings.sharedContent,
+          showCloseButton: true,
+        ),
+        size: const SheetSizeConfig(
+          height: SheetDimension.fraction(0.67),
+          maxHeight: SheetDimension.fraction(1.0),
+        ),
+        drag: const SheetDragConfig(
+          showHandle: true,
+          mode: SheetDragDismissMode.fullBody,
+        ),
+        builder: (context, handle) {
+          return const SharedContentMobileBody();
+        },
       ),
-      size: const SheetSizeConfig(maxHeight: SheetDimension.fraction(0.5)),
-      drag: const SheetDragConfig(
-        showHandle: true,
-        mode: SheetDragDismissMode.fullBody,
-      ),
-      builder: (context, handle) {
-        return const _SharedContentBody();
-      },
-    ),
-  );
+    );
+  }
 }
 
 /// 手机端关于弹窗（居中显示）
@@ -981,47 +991,6 @@ class _AboutDialog extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-/// 共享内容 Sheet 内容
-class _SharedContentBody extends ConsumerWidget {
-  const _SharedContentBody();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final sharedAlbum = ref.watch(sharedAlbumProvider);
-    final sharedFolder = ref.watch(sharedFolderProvider);
-    final colors = AppColorScheme.of(context);
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        CheckboxListTile(
-          title: Text(
-            AppStrings.sharedAlbum,
-            style: TextStyle(color: colors.textPrimary),
-          ),
-          subtitle: Text(AppStrings.sharedAlbumSub),
-          value: sharedAlbum,
-          onChanged: (v) {
-            ref.read(sharedAlbumProvider.notifier).enabled = v ?? false;
-          },
-        ),
-        CheckboxListTile(
-          title: Text(
-            AppStrings.sharedFolder,
-            style: TextStyle(color: colors.textPrimary),
-          ),
-          subtitle: Text(AppStrings.sharedFolderSub),
-          value: sharedFolder,
-          onChanged: (v) {
-            ref.read(sharedFolderProvider.notifier).enabled = v ?? false;
-          },
-        ),
-      ],
     );
   }
 }
