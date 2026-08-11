@@ -6,12 +6,16 @@
 
 #include "generated_plugin_registrant.h"
 
+#include <fc_native_video_thumbnail/fc_native_video_thumbnail_plugin.h>
 #include <screen_retriever_linux/screen_retriever_linux_plugin.h>
 #include <tray_manager/tray_manager_plugin.h>
 #include <url_launcher_linux/url_launcher_plugin.h>
 #include <window_manager/window_manager_plugin.h>
 
 void fl_register_plugins(FlPluginRegistry* registry) {
+  g_autoptr(FlPluginRegistrar) fc_native_video_thumbnail_registrar =
+      fl_plugin_registry_get_registrar_for_plugin(registry, "FcNativeVideoThumbnailPlugin");
+  fc_native_video_thumbnail_plugin_register_with_registrar(fc_native_video_thumbnail_registrar);
   g_autoptr(FlPluginRegistrar) screen_retriever_linux_registrar =
       fl_plugin_registry_get_registrar_for_plugin(registry, "ScreenRetrieverLinuxPlugin");
   screen_retriever_linux_plugin_register_with_registrar(screen_retriever_linux_registrar);

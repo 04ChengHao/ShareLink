@@ -128,7 +128,7 @@ class AppStrings {
   // 设置 - 共享内容 - 权限
   static const String permissionDeniedTitle = '需要权限';
   static const String permissionPhotosDesc = '需要相册访问权限才能共享图片，请在设置中开启相关权限';
-  static const String permissionStorageDesc = '需要存储访问权限才能共享文件，请在设置中开启相关权限';
+  static const String permissionStorageDesc = '需要"所有文件访问"权限才能扫描文档、下载和自定义文件夹中的文件，请在设置中开启该权限';
 
   // 设备连接
   static const String connecting = '连接中...';

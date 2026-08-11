@@ -149,10 +149,13 @@ class SharedContentNotifier extends Notifier<SharedContentSettings> {
   /// 文件夹开关是否开启
   bool get folderEnabled => state.folderEnabled;
 
-  /// 添加共享文件夹
+  /// 添加共享文件夹（自动开启文件夹共享开关）
   void addFolder(String path) {
     if (state.folders.contains(path)) return;
-    state = state.copyWith(folders: [...state.folders, path]);
+    state = state.copyWith(
+      folders: [...state.folders, path],
+      folderEnabled: true,
+    );
     _persist();
   }
 

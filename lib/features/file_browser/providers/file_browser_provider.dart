@@ -7,8 +7,10 @@ import '../../../core/constants/app_strings.dart';
 import '../../../core/providers/global_providers.dart';
 import '../../../core/services/storage_service.dart';
 import '../../device_discovery/providers/device_provider.dart';
+import '../../settings/providers/settings_provider.dart';
 import '../models/file_category.dart';
 import '../models/file_item.dart';
+import '../services/local_file_service.dart';
 
 // ===========================================================================
 // 设备选择
@@ -82,7 +84,7 @@ final defaultCategories = <FileCategory>[
   const FileCategory(
     name: AppStrings.categoryVideo,
     icon: Icons.video_file,
-    fileTypes: ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'rmvb', 'ts'],
+    fileTypes: ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'rmvb', 'ts', '3gp'],
   ),
   const FileCategory(
     name: AppStrings.categoryAudio,
@@ -154,11 +156,15 @@ class CustomCategoriesNotifier extends Notifier<List<FileCategory>> {
     if (state.any((c) => c.name == category.name)) return;
     state = [...state, category];
     _persist();
+    // 自动选中新分类
+    ref.read(fileCategoryProvider.notifier).category = category.name;
   }
 
   void removeCategory(String name) {
     state = state.where((c) => c.name != name).toList();
     _persist();
+    // 清除该分类的文件缓存
+    ref.read(localFileServiceProvider).clearCategoryCache(name);
     // 如果删除的是当前选中的分类，回退到第一个默认分类
     final currentCategory = ref.read(fileCategoryProvider);
     if (currentCategory == name) {
@@ -193,7 +199,7 @@ class FileCategoryNotifier extends Notifier<String> {
 }
 
 // ===========================================================================
-// 显示模式（文件名显示、时间轴分组、大小排序）
+// 显示模式（文件名显示、时间轴分组、后缀分组、排序方向）
 // ===========================================================================
 
 /// 文件名显示开关
@@ -204,11 +210,16 @@ final showFileNameProvider =
 
 class ShowFileNameNotifier extends Notifier<bool> {
   @override
-  bool build() => true;
+  bool build() =>
+      ref.read(sharedPrefsProvider).getBool(StorageKeys.filterShowFileName) ??
+      true;
 
-  set value(bool v) => state = v;
+  set value(bool v) {
+    state = v;
+    ref.read(sharedPrefsProvider).setBool(StorageKeys.filterShowFileName, v);
+  }
 
-  void toggle() => state = !state;
+  void toggle() => value = !state;
 }
 
 /// 时间轴分组开关
@@ -219,11 +230,16 @@ final timelineGroupProvider =
 
 class TimelineGroupNotifier extends Notifier<bool> {
   @override
-  bool build() => false;
+  bool build() =>
+      ref.read(sharedPrefsProvider).getBool(StorageKeys.filterTimelineGroup) ??
+      false;
 
-  set value(bool v) => state = v;
+  set value(bool v) {
+    state = v;
+    ref.read(sharedPrefsProvider).setBool(StorageKeys.filterTimelineGroup, v);
+  }
 
-  void toggle() => state = !state;
+  void toggle() => value = !state;
 }
 
 /// 后缀名分组开关（默认开启）
@@ -234,11 +250,16 @@ final extensionGroupProvider =
 
 class ExtensionGroupNotifier extends Notifier<bool> {
   @override
-  bool build() => true;
+  bool build() =>
+      ref.read(sharedPrefsProvider).getBool(StorageKeys.filterExtensionGroup) ??
+      true;
 
-  set value(bool v) => state = v;
+  set value(bool v) {
+    state = v;
+    ref.read(sharedPrefsProvider).setBool(StorageKeys.filterExtensionGroup, v);
+  }
 
-  void toggle() => state = !state;
+  void toggle() => value = !state;
 }
 
 /// 排序方向开关（默认 false = 倒序/最新在前，true = 正序/最旧在前）
@@ -249,11 +270,16 @@ final sortAscendingProvider =
 
 class SortAscendingNotifier extends Notifier<bool> {
   @override
-  bool build() => false;
+  bool build() =>
+      ref.read(sharedPrefsProvider).getBool(StorageKeys.filterSortAscending) ??
+      false;
 
-  set value(bool v) => state = v;
+  set value(bool v) {
+    state = v;
+    ref.read(sharedPrefsProvider).setBool(StorageKeys.filterSortAscending, v);
+  }
 
-  void toggle() => state = !state;
+  void toggle() => value = !state;
 }
 
 // ===========================================================================
@@ -270,9 +296,18 @@ final desktopColumnModeProvider =
 
 class DesktopColumnModeNotifier extends Notifier<ColumnMode> {
   @override
-  ColumnMode build() => ColumnMode.single;
+  ColumnMode build() {
+    final name = ref.read(sharedPrefsProvider).getString(StorageKeys.desktopColumnMode);
+    return ColumnMode.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => ColumnMode.single,
+    );
+  }
 
-  set mode(ColumnMode value) => state = value;
+  set mode(ColumnMode value) {
+    state = value;
+    ref.read(sharedPrefsProvider).setString(StorageKeys.desktopColumnMode, value.name);
+  }
 }
 
 /// 手机端分类显示模式
@@ -285,13 +320,46 @@ final mobileCategoryDisplayModeProvider =
 
 class MobileCategoryDisplayModeNotifier extends Notifier<CategoryDisplayMode> {
   @override
-  CategoryDisplayMode build() => CategoryDisplayMode.list;
+  CategoryDisplayMode build() {
+    final name = ref.read(sharedPrefsProvider).getString(StorageKeys.mobileCategoryDisplayMode);
+    return CategoryDisplayMode.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => CategoryDisplayMode.list,
+    );
+  }
 
-  set mode(CategoryDisplayMode value) => state = value;
+  set mode(CategoryDisplayMode value) {
+    state = value;
+    ref.read(sharedPrefsProvider).setString(StorageKeys.mobileCategoryDisplayMode, value.name);
+  }
 }
 
 // ===========================================================================
-// 文件列表（静态测试数据）
+// 文件服务 & 扫描状态
+// ===========================================================================
+
+/// 本机文件服务实例
+final localFileServiceProvider = Provider<LocalFileService>((ref) {
+  return LocalFileService.instance;
+});
+
+/// 文件扫描状态
+enum FileScanState { idle, scanning, done, empty }
+
+final fileScanStateProvider =
+    NotifierProvider<FileScanStateNotifier, FileScanState>(
+      FileScanStateNotifier.new,
+    );
+
+class FileScanStateNotifier extends Notifier<FileScanState> {
+  @override
+  FileScanState build() => FileScanState.idle;
+
+  void set(FileScanState value) => state = value;
+}
+
+// ===========================================================================
+// 文件列表（从共享文件夹扫描真实文件）
 // ===========================================================================
 
 final fileListProvider = NotifierProvider<FileListNotifier, List<FileItem>>(
@@ -301,54 +369,62 @@ final fileListProvider = NotifierProvider<FileListNotifier, List<FileItem>>(
 class FileListNotifier extends Notifier<List<FileItem>> {
   @override
   List<FileItem> build() {
-    // TODO: 从共享文件夹获取真实文件列表
-    final now = DateTime.now();
-    return [
-      FileItem(name: '风景.jpg', path: '/风景.jpg', size: 2456789, modifiedAt: now),
-      FileItem(name: '截图.png', path: '/截图.png', size: 567432, modifiedAt: now.subtract(const Duration(days: 3))),
-      FileItem(name: '头像.jpg', path: '/头像.jpg', size: 89234, modifiedAt: now.subtract(const Duration(days: 10))),
-      FileItem(name: '设计稿.png', path: '/设计稿.png', size: 3456789, modifiedAt: now.subtract(const Duration(days: 45))),
-      FileItem(name: '壁纸.jpg', path: '/壁纸.jpg', size: 7890123, modifiedAt: now.subtract(const Duration(days: 80))),
-      FileItem(name: '相册1.jpg', path: '/相册1.jpg', size: 123456, modifiedAt: now.subtract(const Duration(days: 100))),
-      FileItem(name: '旅行视频.mp4', path: '/旅行视频.mp4', size: 56789012, modifiedAt: now.subtract(const Duration(days: 200))),
-      FileItem(name: '教程.mov', path: '/教程.mov', size: 23456789, modifiedAt: now.subtract(const Duration(days: 365))),
-      FileItem(name: '音乐.mp3', path: '/音乐.mp3', size: 4567890, modifiedAt: now.subtract(const Duration(days: 400))),
-      FileItem(name: '笔记.txt', path: '/笔记.txt', size: 2345, modifiedAt: now.subtract(const Duration(days: 500))),
-      FileItem(name: 'README.md', path: '/README.md', size: 5678, modifiedAt: now.subtract(const Duration(days: 700))),
-      FileItem(name: '报告.docx', path: '/报告.docx', size: 67890, modifiedAt: now.subtract(const Duration(days: 15))),
-      FileItem(name: '合同.doc', path: '/合同.doc', size: 45678, modifiedAt: now.subtract(const Duration(days: 60))),
-      FileItem(name: '预算表.xlsx', path: '/预算表.xlsx', size: 34567, modifiedAt: now.subtract(const Duration(days: 120))),
-      FileItem(name: '演示.pptx', path: '/演示.pptx', size: 1234567, modifiedAt: now.subtract(const Duration(days: 250))),
-      FileItem(name: '手册.pdf', path: '/手册.pdf', size: 890123, modifiedAt: now.subtract(const Duration(days: 380))),
-      FileItem(name: '项目.zip', path: '/项目.zip', size: 45678901, modifiedAt: now.subtract(const Duration(days: 550))),
-      FileItem(name: '源码.rar', path: '/源码.rar', size: 23456789, modifiedAt: now.subtract(const Duration(days: 720))),
-      FileItem(name: 'main.dart', path: '/main.dart', size: 4567, modifiedAt: now.subtract(const Duration(days: 5))),
-      FileItem(name: 'config.json', path: '/config.json', size: 1234, modifiedAt: now.subtract(const Duration(days: 20))),
-      FileItem(name: 'app.apk', path: '/app.apk', size: 34567890, modifiedAt: now.subtract(const Duration(days: 300))),
-      FileItem(name: '数据.csv', path: '/数据.csv', size: 5678, modifiedAt: now.subtract(const Duration(days: 90))),
-    ];
+    // Watch 共享内容设置 — 设置变化时 Notifier 自动重建，触发重新扫描
+    ref.watch(sharedContentProvider);
+    // 清除所有分类缓存，确保用新路径重新扫描
+    ref.read(localFileServiceProvider).clearAllCaches();
+    // 触发扫描
+    Future.microtask(() => scanFiles());
+    return [];
   }
 
-  set files(List<FileItem> value) => state = value;
+  /// 扫描共享文件夹，更新文件列表
+  Future<void> scanFiles() async {
+    final settings = ref.read(sharedContentProvider);
+    final service = ref.read(localFileServiceProvider);
+
+    ref.read(fileScanStateProvider.notifier).set(FileScanState.scanning);
+
+    final files = await service.scanFiles(settings);
+    state = files;
+
+    if (files.isEmpty) {
+      ref.read(fileScanStateProvider.notifier).set(FileScanState.empty);
+    } else {
+      ref.read(fileScanStateProvider.notifier).set(FileScanState.done);
+    }
+  }
+
+  /// 检查文件变更并按需刷新（选择分类时调用）
+  Future<void> refreshIfNeeded() async {
+    final settings = ref.read(sharedContentProvider);
+    final service = ref.read(localFileServiceProvider);
+
+    if (await service.hasChanges(settings)) {
+      await scanFiles();
+    }
+  }
 }
 
-/// 根据分类筛选并排序后的文件列表
-final filteredFileListProvider = Provider<List<FileItem>>((ref) {
+/// 根据分类筛选后的文件列表（未排序，作为分组缓存的基础）
+///
+/// 仅依赖文件列表和分类，不依赖排序方向。
+/// 当排序方向变化时，此 provider 不会重算，从而避免分组重新计算。
+final _categoryFilteredFileListProvider = Provider<List<FileItem>>((ref) {
   final allFiles = ref.watch(fileListProvider);
   final categories = ref.watch(allCategoriesProvider);
   final selectedCategory = ref.watch(fileCategoryProvider);
+
+  final category = categories.where((c) => c.name == selectedCategory).firstOrNull;
+  if (category == null) return allFiles;
+  return allFiles.where((f) => category.matches(f)).toList();
+});
+
+/// 根据分类筛选并排序后的文件列表（用于平铺展示）
+final filteredFileListProvider = Provider<List<FileItem>>((ref) {
+  final filtered = ref.watch(_categoryFilteredFileListProvider);
   final sortAscending = ref.watch(sortAscendingProvider);
 
-  // 筛选
-  final category = categories.where((c) => c.name == selectedCategory).firstOrNull;
-  List<FileItem> filtered;
-  if (category == null) {
-    filtered = allFiles;
-  } else {
-    filtered = allFiles.where((f) => category.matches(f)).toList();
-  }
-
-  // 排序：按修改时间，方向由 sortAscending 决定
   final sorted = List<FileItem>.from(filtered);
   sorted.sort((a, b) {
     final aTime = a.modifiedAt?.millisecondsSinceEpoch ?? 0;
@@ -383,111 +459,139 @@ class NestedTimelineGroup {
   const NestedTimelineGroup({required this.label, required this.extensionGroups});
 }
 
-/// 按时间轴分组的文件列表（按每组最新文件时间排序，方向由 sortAscending 决定）
-final timelineGroupedFileListProvider = Provider<List<TimelineGroup>>((ref) {
-  final files = ref.watch(filteredFileListProvider);
+/// 原始时间轴分组（不依赖排序方向，仅依赖文件列表）
+///
+/// 遍历所有文件进行分组是耗时操作，缓存此结果避免排序变化时重算。
+/// 包含每组的最大时间用于后续排序。
+class _RawTimelineGroup {
+  final Map<String, List<FileItem>> groups;
+  final Map<String, int> maxTimes;
+  const _RawTimelineGroup(this.groups, this.maxTimes);
+}
+
+final _rawTimelineGroupProvider = Provider<_RawTimelineGroup>((ref) {
+  final files = ref.watch(_categoryFilteredFileListProvider);
   final now = DateTime.now();
-  final sortAscending = ref.watch(sortAscendingProvider);
 
   final groups = <String, List<FileItem>>{};
-  final groupMaxTime = <String, int>{};
+  final maxTimes = <String, int>{};
 
   for (final file in files) {
     final date = file.modifiedAt ?? now;
     final label = _timelineLabel(date, now);
-    if (!groups.containsKey(label)) {
-      groups[label] = [];
-      groupMaxTime[label] = date.millisecondsSinceEpoch;
-    } else {
-      final t = date.millisecondsSinceEpoch;
-      if (t > groupMaxTime[label]!) {
-        groupMaxTime[label] = t;
-      }
+    groups.putIfAbsent(label, () => []).add(file);
+    final t = date.millisecondsSinceEpoch;
+    if (!maxTimes.containsKey(label) || t > maxTimes[label]!) {
+      maxTimes[label] = t;
     }
-    groups[label]!.add(file);
   }
 
-  // 按每组最新文件时间排序
-  final sortedLabels = groupMaxTime.keys.toList()
-    ..sort((a, b) => sortAscending
-        ? groupMaxTime[a]!.compareTo(groupMaxTime[b]!)
-        : groupMaxTime[b]!.compareTo(groupMaxTime[a]!));
-
-  return sortedLabels.map((label) {
-    return TimelineGroup(label: label, files: groups[label]!);
-  }).toList();
+  return _RawTimelineGroup(groups, maxTimes);
 });
 
-/// 按后缀名分组的文件列表
-final extensionGroupedFileListProvider = Provider<List<ExtensionGroup>>((ref) {
-  final files = ref.watch(filteredFileListProvider);
-  final sortAscending = ref.watch(sortAscendingProvider);
+/// 原始后缀分组（不依赖排序方向，仅依赖文件列表）
+class _RawExtensionGroup {
+  final Map<String, List<FileItem>> groups;
+  final Map<String, int> maxTimes;
+  const _RawExtensionGroup(this.groups, this.maxTimes);
+}
+
+final _rawExtensionGroupProvider = Provider<_RawExtensionGroup>((ref) {
+  final files = ref.watch(_categoryFilteredFileListProvider);
 
   final groups = <String, List<FileItem>>{};
-  final groupMaxTime = <String, int>{};
+  final maxTimes = <String, int>{};
 
   for (final file in files) {
     final ext = file.extension.toUpperCase();
-    if (!groups.containsKey(ext)) {
-      groups[ext] = [];
-      groupMaxTime[ext] = file.modifiedAt?.millisecondsSinceEpoch ?? 0;
-    } else {
-      final t = file.modifiedAt?.millisecondsSinceEpoch ?? 0;
-      if (t > groupMaxTime[ext]!) {
-        groupMaxTime[ext] = t;
-      }
+    groups.putIfAbsent(ext, () => []).add(file);
+    final t = file.modifiedAt?.millisecondsSinceEpoch ?? 0;
+    if (!maxTimes.containsKey(ext) || t > maxTimes[ext]!) {
+      maxTimes[ext] = t;
     }
-    groups[ext]!.add(file);
   }
 
-  // 按每组最新文件时间排序（与文件排序方向一致）
-  final sortedLabels = groupMaxTime.keys.toList()
-    ..sort((a, b) => sortAscending
-        ? groupMaxTime[a]!.compareTo(groupMaxTime[b]!)
-        : groupMaxTime[b]!.compareTo(groupMaxTime[a]!));
+  return _RawExtensionGroup(groups, maxTimes);
+});
 
-  return sortedLabels.map((ext) {
-    return ExtensionGroup(label: ext, files: groups[ext]!);
-  }).toList();
+/// 按时间轴分组的文件列表（仅对组标签排序，廉价操作）
+final timelineGroupedFileListProvider = Provider<List<TimelineGroup>>((ref) {
+  final raw = ref.watch(_rawTimelineGroupProvider);
+  final sortAscending = ref.watch(sortAscendingProvider);
+
+  final sortedLabels = raw.maxTimes.keys.toList()
+    ..sort((a, b) => sortAscending
+        ? raw.maxTimes[a]!.compareTo(raw.maxTimes[b]!)
+        : raw.maxTimes[b]!.compareTo(raw.maxTimes[a]!));
+
+  return sortedLabels
+      .map((label) => TimelineGroup(label: label, files: raw.groups[label]!))
+      .toList();
+});
+
+/// 按后缀名分组的文件列表（仅对组标签排序，廉价操作）
+final extensionGroupedFileListProvider = Provider<List<ExtensionGroup>>((ref) {
+  final raw = ref.watch(_rawExtensionGroupProvider);
+  final sortAscending = ref.watch(sortAscendingProvider);
+
+  final sortedLabels = raw.maxTimes.keys.toList()
+    ..sort((a, b) => sortAscending
+        ? raw.maxTimes[a]!.compareTo(raw.maxTimes[b]!)
+        : raw.maxTimes[b]!.compareTo(raw.maxTimes[a]!));
+
+  return sortedLabels
+      .map((ext) => ExtensionGroup(label: ext, files: raw.groups[ext]!))
+      .toList();
 });
 
 /// 时间轴 + 后缀嵌套分组（先按时间轴分组，再在每组内按后缀分组）
 final nestedGroupedFileListProvider = Provider<List<NestedTimelineGroup>>((ref) {
-  final timelineGroups = ref.watch(timelineGroupedFileListProvider);
+  final rawTimeline = ref.watch(_rawTimelineGroupProvider);
   final sortAscending = ref.watch(sortAscendingProvider);
 
-  return timelineGroups.map((tg) {
-    // 在每个时间轴组内，按后缀分组
-    final extGroups = <String, List<FileItem>>{};
-    final extMaxTime = <String, int>{};
+  // 时间轴组排序
+  final sortedTimelineLabels = rawTimeline.maxTimes.keys.toList()
+    ..sort((a, b) => sortAscending
+        ? rawTimeline.maxTimes[a]!.compareTo(rawTimeline.maxTimes[b]!)
+        : rawTimeline.maxTimes[b]!.compareTo(rawTimeline.maxTimes[a]!));
 
-    for (final file in tg.files) {
+  return sortedTimelineLabels.map((label) {
+    final timelineFiles = rawTimeline.groups[label]!;
+
+    // 在每个时间轴组内按后缀分组
+    final extGroups = <String, List<FileItem>>{};
+    final extMaxTimes = <String, int>{};
+
+    for (final file in timelineFiles) {
       final ext = file.extension.toUpperCase();
-      if (!extGroups.containsKey(ext)) {
-        extGroups[ext] = [];
-        extMaxTime[ext] = file.modifiedAt?.millisecondsSinceEpoch ?? 0;
-      } else {
-        final t = file.modifiedAt?.millisecondsSinceEpoch ?? 0;
-        if (t > extMaxTime[ext]!) {
-          extMaxTime[ext] = t;
-        }
+      extGroups.putIfAbsent(ext, () => []).add(file);
+      final t = file.modifiedAt?.millisecondsSinceEpoch ?? 0;
+      if (!extMaxTimes.containsKey(ext) || t > extMaxTimes[ext]!) {
+        extMaxTimes[ext] = t;
       }
-      extGroups[ext]!.add(file);
     }
 
-    // 按每组最新文件时间排序
-    final sortedExts = extMaxTime.keys.toList()
+    final sortedExts = extMaxTimes.keys.toList()
       ..sort((a, b) => sortAscending
-          ? extMaxTime[a]!.compareTo(extMaxTime[b]!)
-          : extMaxTime[b]!.compareTo(extMaxTime[a]!));
+          ? extMaxTimes[a]!.compareTo(extMaxTimes[b]!)
+          : extMaxTimes[b]!.compareTo(extMaxTimes[a]!));
 
     return NestedTimelineGroup(
-      label: tg.label,
+      label: label,
       extensionGroups: sortedExts
           .map((ext) => ExtensionGroup(label: ext, files: extGroups[ext]!))
           .toList(),
     );
   }).toList();
+});
+
+/// 预热分组缓存
+///
+/// 始终 watch 原始分组 provider，确保切换分组开关时无需重新遍历文件。
+/// 视图层应始终 watch 此 provider。
+final groupCacheWarmupProvider = Provider<void>((ref) {
+  ref.watch(_rawTimelineGroupProvider);
+  ref.watch(_rawExtensionGroupProvider);
 });
 
 /// 生成时间轴分组标签

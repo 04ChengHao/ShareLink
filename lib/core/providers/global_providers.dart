@@ -23,6 +23,12 @@ class StorageKeys {
   static const deviceId = 'device_id';
   static const previouslyConnectedDevices = 'previously_connected_devices';
   static const customCategories = 'custom_categories';
+  static const filterShowFileName = 'filter_show_file_name';
+  static const filterTimelineGroup = 'filter_timeline_group';
+  static const filterExtensionGroup = 'filter_extension_group';
+  static const filterSortAscending = 'filter_sort_ascending';
+  static const desktopColumnMode = 'desktop_column_mode';
+  static const mobileCategoryDisplayMode = 'mobile_category_display_mode';
 }
 
 // =============================================================================

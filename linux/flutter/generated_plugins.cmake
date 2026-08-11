@@ -3,6 +3,7 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  fc_native_video_thumbnail
   screen_retriever_linux
   tray_manager
   url_launcher_linux

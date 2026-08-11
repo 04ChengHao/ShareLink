@@ -40,7 +40,7 @@ class FileItem {
   // ---- 文件类型判断 ----
 
   static const _imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic'];
-  static const _videoExts = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'rmvb', 'ts'];
+  static const _videoExts = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'rmvb', 'ts', '3gp'];
   static const _audioExts = ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma'];
   static const _textExts = ['txt', 'md', 'log', 'csv', 'rtf'];
   static const _wordExts = ['doc', 'docx'];
@@ -119,6 +119,9 @@ class FileItem {
 
   /// 是否有可显示的封面（图片或视频）
   bool get hasCover => isImage || isVideo;
+
+  /// 文件唯一标识（路径 + 大小 + 修改时间）
+  String get uniqueKey => '$path|${size ?? 0}|${modifiedAt?.millisecondsSinceEpoch ?? 0}';
 
   /// 格式化文件大小
   String get formattedSize {

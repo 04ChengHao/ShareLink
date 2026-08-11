@@ -28,6 +28,83 @@ class FileBrowserView extends ConsumerWidget {
   }
 }
 
+/// 打开文件（调用系统默认应用）
+Future<void> _openFile(BuildContext context, WidgetRef ref, FileItem file) async {
+  final service = ref.read(localFileServiceProvider);
+  final success = await service.openFile(file.path);
+  if (!success && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('无法打开文件：${file.name}'),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+}
+
+/// 加载中状态组件
+class _LoadingState extends StatelessWidget {
+  const _LoadingState();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColorScheme.of(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 32,
+            height: 32,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              color: colors.iconActive,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '正在扫描文件…',
+            style: TextStyle(fontSize: 14, color: colors.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 空结果状态组件
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColorScheme.of(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.folder_open,
+            size: 64,
+            color: colors.textHint,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '暂无文件',
+            style: TextStyle(fontSize: 15, color: colors.textSecondary),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '请在设置中添加共享文件夹',
+            style: TextStyle(fontSize: 13, color: colors.textHint),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 根据当前选中的设备名称解析对应的设备图标
 IconData _resolveDeviceIcon(String? deviceName, List<Device> connectedDevices) {
   if (deviceName == null || connectedDevices.isEmpty) {
@@ -162,6 +239,14 @@ class _DesktopFileBrowser extends ConsumerWidget {
     final extensionGroup = ref.watch(extensionGroupProvider);
     final nestedGroups = ref.watch(nestedGroupedFileListProvider);
     final extensionGroups = ref.watch(extensionGroupedFileListProvider);
+    final scanState = ref.watch(fileScanStateProvider);
+    // 预热分组缓存，确保切换开关时即时响应
+    ref.watch(groupCacheWarmupProvider);
+
+    // 选择分类时检查文件变更
+    ref.listen(fileCategoryProvider, (_, _) {
+      ref.read(fileListProvider.notifier).refreshIfNeeded();
+    });
 
     return Scaffold(
       body: SafeArea(
@@ -219,6 +304,8 @@ class _DesktopFileBrowser extends ConsumerWidget {
                           timelineGroups: timelineGroups,
                           extensionGroups: extensionGroups,
                           nestedGroups: nestedGroups,
+                          scanState: scanState,
+                          onFileTap: (file) => _openFile(context, ref, file),
                         ),
                       ),
                     ],
@@ -238,7 +325,9 @@ class _DesktopFileBrowser extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 /// 根据分组模式渲染不同的内容区
-class _FileContentArea extends StatelessWidget {
+///
+/// 切换分组模式时显示短暂 loading，避免大量文件渲染造成卡顿无反馈。
+class _FileContentArea extends StatefulWidget {
   final bool timelineGroup;
   final bool extensionGroup;
   final bool showFileName;
@@ -247,6 +336,8 @@ class _FileContentArea extends StatelessWidget {
   final List<TimelineGroup> timelineGroups;
   final List<ExtensionGroup> extensionGroups;
   final List<NestedTimelineGroup> nestedGroups;
+  final FileScanState scanState;
+  final void Function(FileItem)? onFileTap;
 
   const _FileContentArea({
     required this.timelineGroup,
@@ -257,32 +348,92 @@ class _FileContentArea extends StatelessWidget {
     required this.timelineGroups,
     required this.extensionGroups,
     required this.nestedGroups,
+    required this.scanState,
+    this.onFileTap,
   });
 
   @override
+  State<_FileContentArea> createState() => _FileContentAreaState();
+}
+
+class _FileContentAreaState extends State<_FileContentArea> {
+  /// 是否正在切换分组模式（显示 loading）
+  bool _switching = false;
+
+  /// 上一次的分组模式（用于检测变化）
+  bool? _prevTimelineGroup;
+  bool? _prevExtensionGroup;
+
+  @override
+  void didUpdateWidget(covariant _FileContentArea oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 检测分组模式变化（选中/取消都会触发）
+    final modeChanged = _prevTimelineGroup != null &&
+        _prevExtensionGroup != null &&
+        (_prevTimelineGroup != widget.timelineGroup ||
+            _prevExtensionGroup != widget.extensionGroup);
+
+    if (modeChanged && !_switching) {
+      // 开始切换：显示 loading，延迟一帧再渲染内容
+      _switching = true;
+      _prevTimelineGroup = widget.timelineGroup;
+      _prevExtensionGroup = widget.extensionGroup;
+      // 使用微任务延迟，让 loading 动画有机会渲染一帧
+      Future.microtask(() {
+        if (mounted) {
+          setState(() => _switching = false);
+        }
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    // 加载中状态（文件扫描中）
+    if (widget.scanState == FileScanState.idle ||
+        widget.scanState == FileScanState.scanning) {
+      return const _LoadingState();
+    }
+
+    // 空结果状态
+    if (widget.files.isEmpty) {
+      return const _EmptyState();
+    }
+
+    // 首次记录当前模式
+    _prevTimelineGroup ??= widget.timelineGroup;
+    _prevExtensionGroup ??= widget.extensionGroup;
+
+    // 切换中：显示 loading
+    if (_switching) {
+      return const _LoadingState();
+    }
+
     // 时间轴 + 后缀嵌套分组（时间轴优先）
-    if (timelineGroup && extensionGroup) {
+    if (widget.timelineGroup && widget.extensionGroup) {
       return _TimelineExtensionView(
-        groups: nestedGroups,
-        showFileName: showFileName,
-        crossAxisCount: crossAxisCount,
+        groups: widget.nestedGroups,
+        showFileName: widget.showFileName,
+        crossAxisCount: widget.crossAxisCount,
+        onFileTap: widget.onFileTap,
       );
     }
     // 仅时间轴分组
-    if (timelineGroup) {
+    if (widget.timelineGroup) {
       return _TimelineView(
-        groups: timelineGroups,
-        showFileName: showFileName,
-        crossAxisCount: crossAxisCount,
+        groups: widget.timelineGroups,
+        showFileName: widget.showFileName,
+        crossAxisCount: widget.crossAxisCount,
+        onFileTap: widget.onFileTap,
       );
     }
     // 仅后缀分组
-    if (extensionGroup) {
+    if (widget.extensionGroup) {
       return _ExtensionView(
-        groups: extensionGroups,
-        showFileName: showFileName,
-        crossAxisCount: crossAxisCount,
+        groups: widget.extensionGroups,
+        showFileName: widget.showFileName,
+        crossAxisCount: widget.crossAxisCount,
+        onFileTap: widget.onFileTap,
       );
     }
     // 平铺模式
@@ -290,17 +441,20 @@ class _FileContentArea extends StatelessWidget {
       builder: (context, constraints) {
         final count = _calcCrossAxisCount(constraints.maxWidth);
         return GridView.builder(
-          padding: EdgeInsets.zero,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: count,
             crossAxisSpacing: 8,
             mainAxisSpacing: 8,
             childAspectRatio: 0.85,
           ),
-          itemCount: files.length,
+          itemCount: widget.files.length,
           itemBuilder: (context, index) => FileListItem(
-            file: files[index],
-            showFileName: showFileName,
+            file: widget.files[index],
+            showFileName: widget.showFileName,
+            onTap: widget.onFileTap != null
+                ? () => widget.onFileTap!(widget.files[index])
+                : null,
           ),
         );
       },
@@ -559,7 +713,15 @@ class _MobileFileBrowser extends ConsumerWidget {
     final showFileName = ref.watch(showFileNameProvider);
     final timelineGroup = ref.watch(timelineGroupProvider);
     final extensionGroup = ref.watch(extensionGroupProvider);
+    final scanState = ref.watch(fileScanStateProvider);
     final colors = AppColorScheme.of(context);
+    // 预热分组缓存，确保切换开关时即时响应
+    ref.watch(groupCacheWarmupProvider);
+
+    // 选择分类时检查文件变更
+    ref.listen(fileCategoryProvider, (_, _) {
+      ref.read(fileListProvider.notifier).refreshIfNeeded();
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -682,6 +844,8 @@ class _MobileFileBrowser extends ConsumerWidget {
                 timelineGroups: timelineGroups,
                 extensionGroups: extensionGroups,
                 nestedGroups: nestedGroups,
+                scanState: scanState,
+                onFileTap: (file) => _openFile(context, ref, file),
               ),
             ),
           ],
@@ -878,11 +1042,13 @@ class _TimelineView extends StatefulWidget {
   final List<TimelineGroup> groups;
   final bool showFileName;
   final int crossAxisCount;
+  final void Function(FileItem)? onFileTap;
 
   const _TimelineView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
+    this.onFileTap,
   });
 
   @override
@@ -902,72 +1068,79 @@ class _TimelineViewState extends State<_TimelineView> {
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
 
+    // 构建 sliver 列表：标题 + 文件网格交替
+    final slivers = <Widget>[];
+    for (final group in widget.groups) {
+      slivers.add(SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: colors.primaryWithAlpha(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  group.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: colors.iconActive,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${group.files.length} 个文件',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ));
+      slivers.add(SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+        sliver: SliverGrid(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: widget.crossAxisCount,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 2,
+            childAspectRatio: 0.85,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, index) => FileListItem(
+              file: group.files[index],
+              showFileName: widget.showFileName,
+              onTap: widget.onFileTap != null
+                  ? () => widget.onFileTap!(group.files[index])
+                  : null,
+            ),
+            childCount: group.files.length,
+          ),
+        ),
+      ));
+    }
+    // 底部留白
+    slivers.add(const SliverPadding(
+      padding: EdgeInsets.only(bottom: 16),
+      sliver: SliverToBoxAdapter(child: SizedBox.shrink()),
+    ));
+
     return Row(
       children: [
         // 文件列表（隐藏原生滚动条）
         Expanded(
           child: ScrollConfiguration(
             behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-            child: ListView.builder(
+            child: CustomScrollView(
               controller: _scrollController,
-              padding: const EdgeInsets.fromLTRB(16, 0, 8, 16),
-              itemCount: widget.groups.length,
-            itemBuilder: (context, groupIndex) {
-              final group = widget.groups[groupIndex];
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 时间标签
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6, bottom: 6),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: colors.primaryWithAlpha(0.1),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            group.label,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: colors.iconActive,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '${group.files.length} 个文件',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: colors.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // 文件网格
-                  GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: widget.crossAxisCount,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 2,
-                      childAspectRatio: 0.85,
-                    ),
-                    itemCount: group.files.length,
-                    itemBuilder: (context, index) => FileListItem(
-                      file: group.files[index],
-                      showFileName: widget.showFileName,
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
+              slivers: slivers,
+            ),
           ),
         ),
         // 右侧时间轴进度条（3/4 高度）
@@ -989,75 +1162,86 @@ class _ExtensionView extends StatelessWidget {
   final List<ExtensionGroup> groups;
   final bool showFileName;
   final int crossAxisCount;
+  final void Function(FileItem)? onFileTap;
 
   const _ExtensionView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
+    this.onFileTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
 
-    return ScrollConfiguration(
-      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        itemCount: groups.length,
-        itemBuilder: (context, groupIndex) {
-          final group = groups[groupIndex];
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    // 构建 sliver 列表：标题 + 文件网格交替
+    final slivers = <Widget>[];
+    for (final group in groups) {
+      slivers.add(SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+          child: Row(
             children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 6, bottom: 6),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: colors.primaryWithAlpha(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        group.label,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: colors.iconActive,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '${group.files.length} 个文件',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: colors.textSecondary,
-                      ),
-                    ),
-                  ],
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: colors.primaryWithAlpha(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  group.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: colors.iconActive,
+                  ),
                 ),
               ),
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: crossAxisCount,
-                  crossAxisSpacing: 8,
-                  mainAxisSpacing: 8,
-                  childAspectRatio: 0.85,
-                ),
-                itemCount: group.files.length,
-                itemBuilder: (context, index) => FileListItem(
-                  file: group.files[index],
-                  showFileName: showFileName,
+              const SizedBox(width: 8),
+              Text(
+                '${group.files.length} 个文件',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colors.textSecondary,
                 ),
               ),
             ],
-          );
-        },
+          ),
+        ),
+      ));
+      slivers.add(SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverGrid(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: 0.85,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, index) => FileListItem(
+              file: group.files[index],
+              showFileName: showFileName,
+              onTap: onFileTap != null
+                  ? () => onFileTap!(group.files[index])
+                  : null,
+            ),
+            childCount: group.files.length,
+          ),
+        ),
+      ));
+    }
+    // 底部留白
+    slivers.add(const SliverPadding(
+      padding: EdgeInsets.only(bottom: 16),
+      sliver: SliverToBoxAdapter(child: SizedBox.shrink()),
+    ));
+
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+      child: CustomScrollView(
+        slivers: slivers,
       ),
     );
   }
@@ -1072,102 +1256,115 @@ class _TimelineExtensionView extends StatelessWidget {
   final List<NestedTimelineGroup> groups;
   final bool showFileName;
   final int crossAxisCount;
+  final void Function(FileItem)? onFileTap;
 
   const _TimelineExtensionView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
+    this.onFileTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
 
-    return ScrollConfiguration(
-      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        itemCount: groups.length,
-        itemBuilder: (context, groupIndex) {
-          final group = groups[groupIndex];
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    final slivers = <Widget>[];
+    for (final group in groups) {
+      // 时间轴分组标题
+      slivers.add(SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+          child: Row(
             children: [
-              // 时间轴分组标题
-              Padding(
-                padding: const EdgeInsets.only(top: 6, bottom: 6),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: colors.primaryWithAlpha(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        group.label,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: colors.iconActive,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '${group.extensionGroups.fold<int>(0, (sum, g) => sum + g.files.length)} 个文件',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: colors.textSecondary,
-                      ),
-                    ),
-                  ],
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: colors.primaryWithAlpha(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  group.label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: colors.iconActive,
+                  ),
                 ),
               ),
-              // 后缀子分组
-              for (final extGroup in group.extensionGroups) ...[
-                Padding(
-                  padding: const EdgeInsets.only(top: 4, bottom: 4),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: colors.inputBg,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          '${extGroup.label} · ${extGroup.files.length}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: colors.textSecondary,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+              const SizedBox(width: 8),
+              Text(
+                '${group.extensionGroups.fold<int>(0, (sum, g) => sum + g.files.length)} 个文件',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colors.textSecondary,
                 ),
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: crossAxisCount,
-                    crossAxisSpacing: 8,
-                    mainAxisSpacing: 8,
-                    childAspectRatio: 0.85,
+              ),
+            ],
+          ),
+        ),
+      ));
+
+      // 后缀子分组
+      for (final extGroup in group.extensionGroups) {
+        slivers.add(SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Row(
+              children: [
+                const SizedBox(width: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: colors.inputBg,
+                    borderRadius: BorderRadius.circular(6),
                   ),
-                  itemCount: extGroup.files.length,
-                  itemBuilder: (context, index) => FileListItem(
-                    file: extGroup.files[index],
-                    showFileName: showFileName,
+                  child: Text(
+                    '${extGroup.label} · ${extGroup.files.length}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: colors.textSecondary,
+                    ),
                   ),
                 ),
               ],
-            ],
-          );
-        },
+            ),
+          ),
+        ));
+        slivers.add(SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: SliverGrid(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: crossAxisCount,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+              childAspectRatio: 0.85,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) => FileListItem(
+                file: extGroup.files[index],
+                showFileName: showFileName,
+                onTap: onFileTap != null
+                    ? () => onFileTap!(extGroup.files[index])
+                    : null,
+              ),
+              childCount: extGroup.files.length,
+            ),
+          ),
+        ));
+      }
+    }
+    // 底部留白
+    slivers.add(const SliverPadding(
+      padding: EdgeInsets.only(bottom: 16),
+      sliver: SliverToBoxAdapter(child: SizedBox.shrink()),
+    ));
+
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+      child: CustomScrollView(
+        slivers: slivers,
       ),
     );
   }

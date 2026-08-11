@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
+import '../../../core/utils/permission_utils.dart';
 import '../../../shared/widgets/glass_switch.dart';
 import '../providers/settings_provider.dart';
 
@@ -47,8 +48,10 @@ class _SharedContentMobileBodyState
 
     if (settings.album) {
       final photosStatus = await Permission.photos.status;
+      final videosStatus = await Permission.videos.status;
       final storageStatus = await Permission.storage.status;
-      if (!photosStatus.isGranted && !storageStatus.isGranted) {
+      // 相册需要图片或视频权限至少一个
+      if (!photosStatus.isGranted && !videosStatus.isGranted && !storageStatus.isGranted) {
         notifier.album = false;
       }
     }
@@ -61,18 +64,12 @@ class _SharedContentMobileBodyState
       }
     }
 
-    if (settings.documents) {
-      final docPath = _getSystemFolderPath(_ContentType.documents);
-      if (!Directory(docPath).existsSync()) {
-        notifier.documents = false;
-      }
-    }
-
-    if (settings.downloads) {
-      final dlPath = _getSystemFolderPath(_ContentType.downloads);
-      if (!Directory(dlPath).existsSync()) {
-        notifier.downloads = false;
-      }
+    // 文档/下载/文件夹需要 MANAGE_EXTERNAL_STORAGE（Android 11+）
+    final hasAllFilesAccess = await PermissionUtils.hasAllFilesAccess();
+    if (!hasAllFilesAccess) {
+      if (settings.documents) notifier.documents = false;
+      if (settings.downloads) notifier.downloads = false;
+      if (settings.folderEnabled) notifier.folderEnabled = false;
     }
 
     if (mounted) setState(() => _checking = false);
@@ -131,7 +128,15 @@ class _SharedContentMobileBodyState
           title: AppStrings.sharedFolder,
           subtitle: AppStrings.sharedFolderSub,
           value: folderEnabled,
-          onChanged: (v) {
+          onChanged: (v) async {
+            if (v) {
+              // 开启文件夹共享前检查所有文件访问权限
+              final granted = await PermissionUtils.requestAllFilesAccess();
+              if (!granted) {
+                if (mounted) _showPermissionDenied();
+                return;
+              }
+            }
             ref.read(sharedContentProvider.notifier).folderEnabled = v;
             if (v && settings.folders.isEmpty) {
               _openFolderPicker();
@@ -189,14 +194,20 @@ class _SharedContentMobileBodyState
 
     switch (type) {
       case _ContentType.album:
-        final granted = await _requestMediaPermission(
+        // 相册包含图片和视频，需要同时请求两个权限
+        final photosGranted = await _requestMediaPermission(
           Permission.photos,
           Permission.storage,
         );
-        if (granted) {
+        // 请求视频权限（Android 13+ 需要 READ_MEDIA_VIDEO）
+        final videosGranted = await _requestMediaPermission(
+          Permission.videos,
+          Permission.storage,
+        );
+        if (photosGranted || videosGranted) {
           notifier.album = true;
         } else if (mounted) {
-          _showPermissionDenied();
+          _showPermissionDenied(description: AppStrings.permissionPhotosDesc);
         }
         break;
       case _ContentType.music:
@@ -207,16 +218,25 @@ class _SharedContentMobileBodyState
         if (granted) {
           notifier.music = true;
         } else if (mounted) {
-          _showPermissionDenied();
+          _showPermissionDenied(description: AppStrings.permissionStorageDesc);
         }
         break;
       case _ContentType.documents:
-      case _ContentType.downloads:
-        if (type == _ContentType.documents) {
-          notifier.documents = true;
-        } else {
-          notifier.downloads = true;
+        // Android 11+ 访问非媒体文件需要 MANAGE_EXTERNAL_STORAGE
+        final docGranted = await PermissionUtils.requestAllFilesAccess();
+        if (!docGranted) {
+          if (mounted) _showPermissionDenied();
+          return;
         }
+        notifier.documents = true;
+        break;
+      case _ContentType.downloads:
+        final dlGranted = await PermissionUtils.requestAllFilesAccess();
+        if (!dlGranted) {
+          if (mounted) _showPermissionDenied();
+          return;
+        }
+        notifier.downloads = true;
         break;
       case _ContentType.folder:
         break;
@@ -243,10 +263,11 @@ class _SharedContentMobileBodyState
   }
 
   /// 通过根 Overlay 插入权限拒绝提示，覆盖整个屏幕
-  void _showPermissionDenied() {
+  void _showPermissionDenied({String? description}) {
     _permissionEntry?.remove();
     _permissionEntry = OverlayEntry(
       builder: (_) => _PermissionDeniedOverlay(
+        description: description ?? AppStrings.permissionStorageDesc,
         onClose: () {
           _permissionEntry?.remove();
           _permissionEntry = null;
@@ -272,14 +293,6 @@ class _SharedContentMobileBodyState
       return fallbackStatus.isGranted;
     }
     return false;
-  }
-
-  String _getSystemFolderPath(_ContentType type) {
-    if (type == _ContentType.documents) {
-      return '/storage/emulated/0/Documents';
-    } else {
-      return '/storage/emulated/0/Download';
-    }
   }
 }
 
@@ -404,10 +417,12 @@ enum _ContentType { album, music, documents, downloads, folder }
 class _PermissionDeniedOverlay extends StatelessWidget {
   final VoidCallback onClose;
   final VoidCallback onGoToSettings;
+  final String description;
 
   const _PermissionDeniedOverlay({
     required this.onClose,
     required this.onGoToSettings,
+    this.description = AppStrings.permissionStorageDesc,
   });
 
   @override
@@ -439,7 +454,7 @@ class _PermissionDeniedOverlay extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  AppStrings.permissionPhotosDesc,
+                  description,
                   style: TextStyle(color: colors.textSecondary, fontSize: 14),
                   textAlign: TextAlign.center,
                 ),
