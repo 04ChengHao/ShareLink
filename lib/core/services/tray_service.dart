@@ -26,6 +26,12 @@ class TrayService with TrayListener {
   /// 显示窗口回调（由外部设置，使用 window_manager 实现）
   Future<void> Function()? onShowWindow;
 
+  /// 隐藏窗口回调（由外部设置）。
+  ///
+  /// 退出前若窗口未隐藏到托盘，先隐藏窗口，否则 Windows 在进程退出时
+  /// 会等待窗口/托盘资源释放，导致退出卡顿数秒。
+  Future<void> Function()? onHideWindow;
+
   /// 退出应用回调（由外部设置）
   Future<void> Function()? onExitApp;
 
@@ -110,8 +116,14 @@ class TrayService with TrayListener {
   }
 
   /// 处理退出
+  ///
+  /// 顺序：先隐藏窗口（若未隐藏到托盘）→ 销毁托盘图标 → 销毁窗口并退出进程。
+  /// 窗口可见时直接退出，Windows 会等待窗口/托盘资源释放导致卡顿数秒；
+  /// 先隐藏窗口可避免该等待。用微任务延迟到菜单回调返回后再执行，
+  /// 避免在原生托盘菜单回调上下文里操作导致挂起。
   void _handleExit() async {
-    debugPrint('[TrayService] 退出应用');
+    await Future<void>.delayed(Duration.zero);
+    await onHideWindow?.call();
     await dispose();
     await onExitApp?.call();
   }

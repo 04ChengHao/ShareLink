@@ -24,8 +24,6 @@ void backgroundServiceEntryPoint(ServiceInstance service) {
   });
 }
 
-// TODO: 修改文件管理：1、图片预览页面中的按钮胶囊都太小了，都需要放大一点。2、图片旋转后，触摸点击移动图片上下滑动图片，图片却是左右移动。3、视频预览页面中的音量：图标，数值，进度条间隔需要缩小一些，进度条加粗一点。静音点击应该恢复成原来的音量，而不是100。4、桌面端视频的音量控制不需要控制系统音量，和系统音量单独区分（手机端不变）。5、视频播放页面增加快捷视频倍速功能：桌面端增加键盘映射：（左方向键/a）进度条后退，（右方向键/d）进度条快进。长按快进键会进入2倍速播放。（上下方向键/鼠标滚轮）调整音量大小，10以上一次步长10，10以下步长2。手机端增加触摸倍速：在屏幕右侧区域长按会进入2倍速播放。进入倍速播放后都需要在屏幕中央上方显示”2倍速播放中“。
-
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -74,7 +72,17 @@ void main() async {
       await windowManager.show();
       await windowManager.focus();
     };
+    trayService.onHideWindow = () async {
+      // 复用窗口关闭按钮的隐藏逻辑：windowManager.close() 会触发
+      // 日志
+      debugPrint('[TrayService] 隐藏窗口');
+      await windowManager.close();
+    };
     trayService.onExitApp = () async {
+      // 先销毁窗口让引擎/原生窗口干净释放，再立即退出进程。
+      // 直接 exit() 会让 Windows 引擎清理阻塞，导致退出卡顿数秒。
+      // 日志
+      debugPrint('[TrayService] 退出应用');
       await windowManager.destroy();
       exit(0);
     };
