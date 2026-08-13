@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 
+import '../../../core/services/app_cache_directory.dart';
 import '../../../core/utils/platform_utils.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/file_category.dart';
@@ -121,6 +122,11 @@ class LocalFileService implements FileService {
     }
 
     return paths;
+  }
+
+  /// 获取共享根目录路径列表（用于远程文件访问安全校验）
+  List<String> getSharedRoots(SharedContentSettings settings) {
+    return _getScanPaths(settings);
   }
 
   /// 递归扫描单个目录（手动递归，单个子目录失败不影响其他目录）
@@ -382,9 +388,9 @@ class LocalFileService implements FileService {
     String? result;
 
     try {
-      final tempDir = Directory.systemTemp;
+      final cacheDir = await AppCacheDirectory.root;
       final thumbPath =
-          '${tempDir.path}${Platform.pathSeparator}thumb_${videoPath.hashCode}.jpg';
+          '${cacheDir.path}${Platform.pathSeparator}thumb_${videoPath.hashCode}.jpg';
 
       // 如果缩略图已存在则直接返回
       if (File(thumbPath).existsSync()) {

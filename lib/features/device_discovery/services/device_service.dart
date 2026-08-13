@@ -8,6 +8,9 @@ import 'connection_client.dart';
 import 'connection_server.dart';
 import 'discovery_service.dart';
 
+/// 远程文件元数据（重新导出，方便其他模块引用）
+export 'connection_server.dart' show RemoteFileMeta;
+
 /// 权限异常
 class PermissionException implements Exception {
   final String message;
@@ -37,6 +40,11 @@ class DeviceService {
   final bool Function() _acceptConnectionsGetter;
   final bool Function() _usePasswordGetter;
   final String Function() _passwordGetter;
+
+  /// 文件服务回调：获取共享文件列表、共享根目录、视频缩略图
+  final Future<List<RemoteFileMeta>> Function()? _sharedFilesGetter;
+  final List<String> Function()? _sharedRootsGetter;
+  final Future<String?> Function(String)? _thumbnailGetter;
 
   bool _started = false;
 
@@ -75,16 +83,25 @@ class DeviceService {
     required bool Function() acceptConnectionsGetter,
     required bool Function() usePasswordGetter,
     required String Function() passwordGetter,
+    Future<List<RemoteFileMeta>> Function()? sharedFilesGetter,
+    List<String> Function()? sharedRootsGetter,
+    Future<String?> Function(String)? thumbnailGetter,
   }) : _selfIdGetter = selfIdGetter,
        _selfNameGetter = selfNameGetter,
        _selfTypeGetter = selfTypeGetter,
        _acceptConnectionsGetter = acceptConnectionsGetter,
        _usePasswordGetter = usePasswordGetter,
-       _passwordGetter = passwordGetter {
+       _passwordGetter = passwordGetter,
+       _sharedFilesGetter = sharedFilesGetter,
+       _sharedRootsGetter = sharedRootsGetter,
+       _thumbnailGetter = thumbnailGetter {
     _server = ConnectionServer(
       acceptConnectionsGetter: _acceptConnectionsGetter,
       usePasswordGetter: _usePasswordGetter,
       passwordGetter: _passwordGetter,
+      getSharedFilesGetter: _sharedFilesGetter,
+      getSharedRootsGetter: _sharedRootsGetter,
+      getThumbnailGetter: _thumbnailGetter,
     );
 
     // 注册 Discovery 回调

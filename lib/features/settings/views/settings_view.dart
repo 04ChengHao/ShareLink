@@ -7,6 +7,7 @@ import '../../../core/constants/app_strings.dart';
 import '../../../core/providers/global_providers.dart';
 import '../../../core/services/device_info_service.dart';
 import '../../../core/utils/platform_utils.dart';
+import '../../../features/file_browser/services/remote_file_service.dart';
 import '../../../shared/widgets/glass_dropdown.dart';
 import '../../../shared/widgets/glass_switch.dart';
 import '../../../shared/widgets/neuomorphic_style.dart';
@@ -111,6 +112,9 @@ class _MobileSettingsView extends ConsumerWidget {
               ),
             ),
             const SizedBox(height: 20),
+            _buildSectionTitle(context, AppStrings.settingsCache),
+            const _CacheSettingsGroup(),
+            const SizedBox(height: 20),
             _buildSectionTitle(context, AppStrings.settingsAbout),
             _NeuItemCard(
               onTap: () => _showMobileAboutDialog(context, ref),
@@ -139,7 +143,7 @@ class _MobileSettingsView extends ConsumerWidget {
 // 桌面端设置页：左侧设置项 + 右侧详情
 // ===========================================================================
 
-enum _SettingsSection { appearance, connection, shared, about }
+enum _SettingsSection { appearance, connection, shared, cache, about }
 
 class _DesktopSettingsView extends ConsumerStatefulWidget {
   const _DesktopSettingsView();
@@ -215,6 +219,13 @@ class _DesktopSettingsViewState extends ConsumerState<_DesktopSettingsView> {
                           setState(() => _selected = _SettingsSection.shared),
                     ),
                     _DesktopNavItem(
+                      icon: Icons.cached,
+                      label: AppStrings.navCache,
+                      selected: _selected == _SettingsSection.cache,
+                      onTap: () =>
+                          setState(() => _selected = _SettingsSection.cache),
+                    ),
+                    _DesktopNavItem(
                       icon: Icons.info_outline,
                       label: AppStrings.navAbout,
                       selected: _selected == _SettingsSection.about,
@@ -232,6 +243,7 @@ class _DesktopSettingsViewState extends ConsumerState<_DesktopSettingsView> {
                     _SettingsSection.appearance => _DesktopAppearanceSection(),
                     _SettingsSection.connection => _DesktopConnectionSection(),
                     _SettingsSection.shared => _DesktopSharedSection(),
+                    _SettingsSection.cache => _DesktopCacheSection(),
                     _SettingsSection.about => _DesktopAboutSection(),
                   },
                 ),
@@ -378,6 +390,97 @@ class _DesktopSharedSection extends ConsumerWidget {
             value: clipboardSync,
             onChanged: (v) =>
                 ref.read(clipboardSyncProvider.notifier).enabled = v,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 桌面端 - 缓存设置
+// ---------------------------------------------------------------------------
+
+class _DesktopCacheSection extends StatefulWidget {
+  @override
+  State<_DesktopCacheSection> createState() => _DesktopCacheSectionState();
+}
+
+class _DesktopCacheSectionState extends State<_DesktopCacheSection> {
+  int _cacheSize = 0;
+  bool _clearing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshSize();
+  }
+
+  Future<void> _refreshSize() async {
+    final size = await RemoteFileService.instance.getTempCacheSize();
+    if (mounted) setState(() => _cacheSize = size);
+  }
+
+  Future<void> _clearCache() async {
+    if (_clearing) return;
+    setState(() => _clearing = true);
+    await RemoteFileService.instance.clearAllTempFiles();
+    await _refreshSize();
+    if (mounted) {
+      setState(() => _clearing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('缓存已清空')),
+      );
+    }
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    final kb = bytes / 1024;
+    if (kb < 1024) return '${kb.toStringAsFixed(0)} KB';
+    final mb = kb / 1024;
+    if (mb < 1024) return '${mb.toStringAsFixed(2)} MB';
+    final gb = mb / 1024;
+    return '${gb.toStringAsFixed(2)} GB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = AppColorScheme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          AppStrings.settingsCache,
+          style: theme.textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: colors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 24),
+        _NeuItemCard(
+          child: _NeuTapContent(
+            leading: Icon(Icons.cached, size: 22, color: colors.iconSecondary),
+            title: AppStrings.cacheData,
+            subtitle: '${AppStrings.cacheDataSub}：${_formatSize(_cacheSize)}',
+          ),
+        ),
+        const SizedBox(height: 12),
+        _NeuItemCard(
+          child: _NeuTapContent(
+            leading: Icon(
+              Icons.delete_sweep_outlined,
+              size: 22,
+              color: colors.iconSecondary,
+            ),
+            title: AppStrings.clearCache,
+            subtitle: AppStrings.clearCacheSub,
+            trailing: _ClearCacheButton(
+              busy: _clearing,
+              onPressed: _clearCache,
+              enabled: _cacheSize > 0,
+            ),
           ),
         ),
       ],
@@ -548,6 +651,159 @@ class _DesktopNavItemState extends State<_DesktopNavItem> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 缓存设置组：显示缓存占用大小 + 一键清空缓存
+///
+/// 打开页面时实时计算缓存大小，清空后自动刷新。
+class _CacheSettingsGroup extends StatefulWidget {
+  const _CacheSettingsGroup();
+
+  @override
+  State<_CacheSettingsGroup> createState() => _CacheSettingsGroupState();
+}
+
+class _CacheSettingsGroupState extends State<_CacheSettingsGroup> {
+  int _cacheSize = 0;
+  bool _clearing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshSize();
+  }
+
+  Future<void> _refreshSize() async {
+    final size = await RemoteFileService.instance.getTempCacheSize();
+    if (mounted) setState(() => _cacheSize = size);
+  }
+
+  Future<void> _clearCache() async {
+    if (_clearing) return;
+    setState(() => _clearing = true);
+    await RemoteFileService.instance.clearAllTempFiles();
+    await _refreshSize();
+    if (mounted) {
+      setState(() => _clearing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('缓存已清空')),
+      );
+    }
+  }
+
+  /// 根据大小自动切换单位：B / KB / MB / GB，MB、GB 保留两位小数
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    final kb = bytes / 1024;
+    if (kb < 1024) return '${kb.toStringAsFixed(0)} KB';
+    final mb = kb / 1024;
+    if (mb < 1024) return '${mb.toStringAsFixed(2)} MB';
+    final gb = mb / 1024;
+    return '${gb.toStringAsFixed(2)} GB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColorScheme.of(context);
+    return Column(
+      children: [
+        _NeuItemCard(
+          child: _NeuTapContent(
+            leading: Icon(Icons.cached, size: 22, color: colors.iconSecondary),
+            title: AppStrings.cacheData,
+            subtitle:
+                '${AppStrings.cacheDataSub}：${_formatSize(_cacheSize)}',
+          ),
+        ),
+        const SizedBox(height: 12),
+        _NeuItemCard(
+          child: _NeuTapContent(
+            leading: Icon(
+              Icons.delete_sweep_outlined,
+              size: 22,
+              color: colors.iconSecondary,
+            ),
+            title: AppStrings.clearCache,
+            subtitle: AppStrings.clearCacheSub,
+            trailing: _ClearCacheButton(
+              busy: _clearing,
+              onPressed: _clearCache,
+              enabled: _cacheSize > 0,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 清空缓存按钮（右侧显示，风格与开关等控件统一，适配深色/浅色模式）
+class _ClearCacheButton extends StatelessWidget {
+  final bool busy;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  const _ClearCacheButton({
+    required this.busy,
+    required this.onPressed,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColorScheme.of(context);
+    // 缓存为空时禁用，清空过程中也禁用
+    final canTap = enabled && !busy;
+    final fgColor = enabled ? colors.textPrimary : colors.textHint;
+    return GestureDetector(
+      onTap: canTap ? onPressed : null,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: enabled ? colors.inputBg : colors.scaffoldBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: enabled
+                ? colors.inputBorder
+                : colors.inputBorder.withValues(alpha: 0.4),
+          ),
+          boxShadow: NeuomorphicStyle.adaptive(
+            Theme.of(context).brightness,
+            blur: 8,
+          ),
+        ),
+        child: busy
+            ? SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: colors.iconActive,
+                ),
+              )
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.delete_sweep_outlined,
+                    size: 16,
+                    color: fgColor,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    AppStrings.clearCache,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: fgColor,
+                    ),
+                  ),
+                ],
+              ),
       ),
     );
   }

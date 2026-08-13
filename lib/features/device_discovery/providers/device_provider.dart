@@ -6,13 +6,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/providers/global_providers.dart';
 import '../../../core/services/device_info_service.dart';
 import '../../../core/services/storage_service.dart';
+import '../../file_browser/services/local_file_service.dart';
+import '../../settings/providers/settings_provider.dart';
 import '../models/device.dart';
 import '../services/connection_server.dart';
 import '../services/device_service.dart';
+import '../services/discovery_service.dart';
 import '../services/previously_connected_store.dart';
 
 export '../models/device.dart';
-export '../services/connection_server.dart' show ConnectResult;
+export '../services/connection_server.dart' show ConnectResult, RemoteFileMeta;
 export '../services/device_service.dart'
     show DevicePresenceEvent, OutboundDisconnectEvent;
 
@@ -232,6 +235,24 @@ final deviceServiceProvider = Provider<DeviceService>((ref) {
     acceptConnectionsGetter: () => ref.read(acceptConnectionsProvider),
     usePasswordGetter: () => ref.read(usePasswordProvider),
     passwordGetter: () => ref.read(connectionPasswordProvider),
+    sharedFilesGetter: () async {
+      final settings = ref.read(sharedContentProvider);
+      final fileService = LocalFileService.instance;
+      final files = await fileService.scanFiles(settings);
+      return files.map((f) => RemoteFileMeta(
+        name: f.name,
+        path: f.path,
+        size: f.size,
+        modifiedAt: f.modifiedAt?.millisecondsSinceEpoch,
+      )).toList();
+    },
+    sharedRootsGetter: () {
+      final settings = ref.read(sharedContentProvider);
+      return LocalFileService.instance.getSharedRoots(settings);
+    },
+    thumbnailGetter: (videoPath) {
+      return LocalFileService.instance.getVideoThumbnail(videoPath);
+    },
   );
 
   ref.onDispose(service.dispose);

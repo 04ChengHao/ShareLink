@@ -65,6 +65,7 @@ class AppStrings {
   static const String fileTypeHint = '搜索或输入文件后缀名';
   static const String saveCategory = '保存';
   static const String deleteCategory = '删除分类';
+  static const String refresh = '刷新';
 
   // 设置
   static const String settingsTitle = '设置';
@@ -77,12 +78,14 @@ class AppStrings {
   static const String settingsAppearance = '外观设置';
   static const String settingsConnection = '连接设置';
   static const String settingsShared = '共享设置';
+  static const String settingsCache = '缓存设置';
   static const String settingsAbout = '关于软件';
 
   // 设置 - 导航项
   static const String navAppearance = '外观设置';
   static const String navConnection = '连接设置';
   static const String navShared = '共享设置';
+  static const String navCache = '缓存设置';
   static const String navAbout = '关于软件';
 
   // 设置 - 副标题
@@ -90,6 +93,12 @@ class AppStrings {
   static const String connectionPasswordSub = '连接时需要输入密码';
   static const String sharedContentSub = '选择要共享的内容类型';
   static const String clipboardSyncSub = '跨设备同步剪贴板内容';
+
+  // 设置 - 缓存设置
+  static const String cacheData = '缓存数据';
+  static const String cacheDataSub = '远程文件缓存占用空间';
+  static const String clearCache = '清空缓存';
+  static const String clearCacheSub = '清除所有远程文件缓存数据';
 
   // 设置 - 深色模式
   static const String darkMode = '深色模式';
@@ -154,4 +163,18 @@ class AppStrings {
   static const String permissionIOSDesc = '享联需要访问本地网络权限来发现附近设备，请在设置中开启本地网络权限';
   static const String permissionAndroidDesc = '享联需要网络权限来发现附近设备，请在设置中授予相关权限';
   static const String goToSettings = '去设置';
+
+  // 文件预览
+  static const String fileViewerTitle = '文件预览';
+  static const String openWithSystem = '用系统打开';
+  static const String unsupportedFileTitle = '不支持预览的文件格式';
+  static const String unsupportedFileDesc = '点击右上角按钮使用系统打开方式，本软件不支持该文件格式预览';
+  static const String fileLoading = '正在加载文件…';
+  static const String fileLoadFailed = '文件加载失败';
+  static const String videoSpeed = '倍速';
+  static const String videoFullscreen = '全屏';
+  static const String videoExitFullscreen = '退出全屏';
+  static const String backToTop = '返回顶部';
+  static const String remoteDeviceOffline = '设备已离线，无法访问文件';
+  static const String remoteFileLoadFailed = '无法加载远程文件，请检查设备连接';
 }

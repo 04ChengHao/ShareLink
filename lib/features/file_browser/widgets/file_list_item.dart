@@ -1,24 +1,36 @@
 import 'dart:io';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../models/file_item.dart';
 import '../providers/file_browser_provider.dart';
+import '../services/remote_file_service.dart';
 
 /// 文件列表项（上方封面，下方文件名）
 /// 点击效果为封面缩放动画
+///
+/// 支持本机和远程文件封面：
+/// - 本机图片：Image.file
+/// - 远程图片：CachedNetworkImage（磁盘持久化缓存，避免重复下载）
+/// - 本机视频：本地生成缩略图
+/// - 远程视频：通过 HTTP 请求远程缩略图（同样使用缓存）
 class FileListItem extends ConsumerStatefulWidget {
   final FileItem file;
   final bool showFileName;
   final VoidCallback? onTap;
+
+  /// 远程设备 IP（null 表示本机文件）
+  final String? remoteDeviceIp;
 
   const FileListItem({
     super.key,
     required this.file,
     this.showFileName = true,
     this.onTap,
+    this.remoteDeviceIp,
   });
 
   @override
@@ -108,13 +120,18 @@ class _FileListItemState extends ConsumerState<FileListItem>
     final typeColor = widget.file.typeColor;
 
     if (widget.file.isImage) {
-      return _ImageCover(imagePath: widget.file.path, typeColor: typeColor);
+      return _ImageCover(
+        imagePath: widget.file.path,
+        typeColor: typeColor,
+        remoteDeviceIp: widget.remoteDeviceIp,
+      );
     }
 
     if (widget.file.isVideo) {
       return _VideoThumbnailCover(
         videoPath: widget.file.path,
         typeColor: typeColor,
+        remoteDeviceIp: widget.remoteDeviceIp,
       );
     }
 
@@ -129,24 +146,53 @@ class _FileListItemState extends ConsumerState<FileListItem>
   }
 }
 
-/// 构建默认封面背景（渐变 + 图标）
-Widget _buildGradientCover(Color typeColor, IconData icon) {
-  return Container(
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(12),
-      gradient: LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          typeColor.withValues(alpha: 0.3),
-          typeColor.withValues(alpha: 0.1),
-        ],
-      ),
-    ),
-    child: Center(
-      child: Icon(icon, size: 36, color: typeColor),
-    ),
-  );
+/// 透明网格背景占位（用于图片缩略图）
+///
+/// 使用棋盘格让透明图片的透明区域可见，避免使用渐变色影响判断。
+class _GridPlaceholder extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+
+  const _GridPlaceholder({required this.icon, required this.iconColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CustomPaint(painter: _CheckerPainter()),
+        Center(child: Icon(icon, size: 36, color: iconColor)),
+      ],
+    );
+  }
+}
+
+/// 棋盘格画笔
+class _CheckerPainter extends CustomPainter {
+  static const double _cellSize = 12.0;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final lightPaint = Paint()..color = const Color(0xFFF0F0F0);
+    final darkPaint = Paint()..color = const Color(0xFFD6D6D6);
+
+    canvas.drawRect(Offset.zero & size, lightPaint);
+
+    for (double y = 0; y < size.height; y += _cellSize) {
+      for (double x = 0; x < size.width; x += _cellSize) {
+        final cellIndex = (x / _cellSize).floor() + (y / _cellSize).floor();
+        if (cellIndex.isOdd) {
+          canvas.drawRect(
+            Rect.fromLTWH(x, y, _cellSize, _cellSize),
+            darkPaint,
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 /// 播放图标叠加
@@ -220,14 +266,23 @@ class _PlainCover extends StatelessWidget {
   }
 }
 
-/// 图片封面：先显示默认渐变封面，图片加载完成后淡入替换
+/// 图片封面
+///
+/// - 远程：使用 [CachedNetworkImage] 实现磁盘持久化缓存
+///   （滑动离开再回来不会重新下载）
+/// - 本机：使用 [Image.file] 配合 Flutter 内置图片缓存
+///
+/// 占位符使用透明网格背景（棋盘格），而非渐变色，
+/// 让用户能直观判断图片是否为透明图片。
 class _ImageCover extends StatefulWidget {
   final String imagePath;
   final Color typeColor;
+  final String? remoteDeviceIp;
 
   const _ImageCover({
     required this.imagePath,
     required this.typeColor,
+    this.remoteDeviceIp,
   });
 
   @override
@@ -235,27 +290,75 @@ class _ImageCover extends StatefulWidget {
 }
 
 class _ImageCoverState extends State<_ImageCover> {
+  /// 是否开始加载图片（懒加载标记）
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // 懒加载：等第一帧渲染完成（默认封面已显示）后再开始加载图片
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    // 加载中：显示网格占位
+    if (_loading) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: _GridPlaceholder(
+          icon: Icons.image,
+          iconColor: widget.typeColor,
+        ),
+      );
+    }
+
+    final isRemote = widget.remoteDeviceIp != null;
+
+    if (isRemote) {
+      // 远程：使用 CachedNetworkImage 实现磁盘缓存
+      final url = RemoteFileService.instance.buildFileUrl(
+        widget.remoteDeviceIp!,
+        widget.imagePath,
+      );
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: CachedNetworkImage(
+          imageUrl: url,
+          fit: BoxFit.cover,
+          memCacheWidth: 300,
+          placeholder: (_, _) => _GridPlaceholder(
+            icon: Icons.image,
+            iconColor: widget.typeColor,
+          ),
+          errorWidget: (_, _, _) => _GridPlaceholder(
+            icon: Icons.broken_image,
+            iconColor: widget.typeColor,
+          ),
+        ),
+      );
+    }
+
+    // 本机：使用 Image.file（Flutter 内置缓存）
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // 默认渐变背景（始终作为底层占位）
-          _buildGradientCover(widget.typeColor, Icons.image),
-
-          // 图片（使用 cacheWidth 降低内存，避免大图卡顿）
-          Image.file(
-            File(widget.imagePath),
+          // 网格背景作为占位
+          const _GridPlaceholder(
+            icon: Icons.image,
+            iconColor: Color(0xFF8E8E93),
+          ),
+          Image(
+            image: ResizeImage(FileImage(File(widget.imagePath)), width: 300),
             fit: BoxFit.cover,
-            cacheWidth: 256,
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-              if (frame == null) {
-                // 图片还在加载中，显示默认封面
-                return const SizedBox.shrink();
-              }
-              // 图片加载完成，淡入显示
+              if (frame == null) return const SizedBox.shrink();
               return AnimatedOpacity(
                 opacity: 1.0,
                 duration: const Duration(milliseconds: 200),
@@ -270,14 +373,19 @@ class _ImageCoverState extends State<_ImageCover> {
   }
 }
 
-/// 视频缩略图封面：先显示默认渐变封面，缩略图生成后淡入替换
+/// 视频缩略图封面
+///
+/// - 远程：使用 [CachedNetworkImage] 实现磁盘持久化缓存
+/// - 本机：本地生成缩略图
 class _VideoThumbnailCover extends ConsumerStatefulWidget {
   final String videoPath;
   final Color typeColor;
+  final String? remoteDeviceIp;
 
   const _VideoThumbnailCover({
     required this.videoPath,
     required this.typeColor,
+    this.remoteDeviceIp,
   });
 
   @override
@@ -286,14 +394,34 @@ class _VideoThumbnailCover extends ConsumerStatefulWidget {
 }
 
 class _VideoThumbnailCoverState extends ConsumerState<_VideoThumbnailCover> {
-  String? _thumbnailPath;
+  String? _thumbnailUrl;
   bool _loading = true;
   bool _failed = false;
 
   @override
   void initState() {
     super.initState();
-    _generateThumbnail();
+    // 懒加载：等第一帧渲染完成后再开始加载缩略图
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _startLoadingThumbnail();
+    });
+  }
+
+  void _startLoadingThumbnail() {
+    if (widget.remoteDeviceIp != null) {
+      // 远程模式：直接构建缩略图 URL，由 CachedNetworkImage 加载
+      setState(() {
+        _thumbnailUrl = RemoteFileService.instance.buildThumbnailUrl(
+          widget.remoteDeviceIp!,
+          widget.videoPath,
+        );
+        _loading = false;
+      });
+    } else {
+      // 本机模式：本地生成缩略图
+      _generateThumbnail();
+    }
   }
 
   Future<void> _generateThumbnail() async {
@@ -301,7 +429,7 @@ class _VideoThumbnailCoverState extends ConsumerState<_VideoThumbnailCover> {
     final result = await service.getVideoThumbnail(widget.videoPath);
     if (mounted) {
       setState(() {
-        _thumbnailPath = result;
+        _thumbnailUrl = result;
         _loading = false;
         _failed = result == null;
       });
@@ -310,30 +438,64 @@ class _VideoThumbnailCoverState extends ConsumerState<_VideoThumbnailCover> {
 
   @override
   Widget build(BuildContext context) {
-    // 加载中或失败：显示默认渐变封面 + 播放图标
-    if (_loading || _failed || _thumbnailPath == null) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          _buildGradientCover(widget.typeColor, Icons.video_file),
-          _buildPlayBadge(),
-        ],
+    // 加载中或失败：显示网格占位 + 播放图标
+    if (_loading || _failed || _thumbnailUrl == null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _GridPlaceholder(
+              icon: Icons.video_file,
+              iconColor: widget.typeColor,
+            ),
+            _buildPlayBadge(),
+          ],
+        ),
       );
     }
 
-    // 成功：显示缩略图 + 播放图标
+    final isRemote = widget.remoteDeviceIp != null;
+
+    if (isRemote) {
+      // 远程：使用 CachedNetworkImage 缓存
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            CachedNetworkImage(
+              imageUrl: _thumbnailUrl!,
+              fit: BoxFit.cover,
+              memCacheWidth: 300,
+              placeholder: (_, _) => _GridPlaceholder(
+                icon: Icons.video_file,
+                iconColor: widget.typeColor,
+              ),
+              errorWidget: (_, _, _) => _GridPlaceholder(
+                icon: Icons.video_file,
+                iconColor: widget.typeColor,
+              ),
+            ),
+            _buildPlayBadge(),
+          ],
+        ),
+      );
+    }
+
+    // 本机：使用 Image.file
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // 默认渐变背景作为占位
-          _buildGradientCover(widget.typeColor, Icons.video_file),
-          // 缩略图淡入
-          Image.file(
-            File(_thumbnailPath!),
+          _GridPlaceholder(
+            icon: Icons.video_file,
+            iconColor: widget.typeColor,
+          ),
+          Image(
+            image: ResizeImage(FileImage(File(_thumbnailUrl!)), width: 300),
             fit: BoxFit.cover,
-            cacheWidth: 256,
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
               if (frame == null) return const SizedBox.shrink();
               return AnimatedOpacity(

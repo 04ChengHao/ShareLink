@@ -15,6 +15,7 @@ import '../providers/file_browser_provider.dart';
 import '../widgets/add_category_drawer.dart';
 import '../widgets/add_category_sheet.dart';
 import '../widgets/file_list_item.dart';
+import 'file_viewer_page.dart';
 
 class FileBrowserView extends ConsumerWidget {
   const FileBrowserView({super.key});
@@ -28,19 +29,17 @@ class FileBrowserView extends ConsumerWidget {
   }
 }
 
-/// 打开文件（调用系统默认应用）
-Future<void> _openFile(BuildContext context, WidgetRef ref, FileItem file) async {
-  final service = ref.read(localFileServiceProvider);
-  final success = await service.openFile(file.path);
-  if (!success && context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('无法打开文件：${file.name}'),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
+/// 打开文件预览页面
+void _openFile(BuildContext context, WidgetRef ref, FileItem file) {
+  final deviceIp = ref.read(selectedDeviceIpProvider);
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => FileViewerPage(
+        file: file,
+        remoteDeviceIp: deviceIp,
       ),
-    );
-  }
+    ),
+  );
 }
 
 /// 加载中状态组件
@@ -115,6 +114,25 @@ IconData _resolveDeviceIcon(String? deviceName, List<Device> connectedDevices) {
     orElse: () => connectedDevices.first,
   );
   return deviceTypeIcon(device.typeIcon);
+}
+
+/// 胶囊操作按钮的悬浮提示（统一风格）
+Widget _actionTooltip(String message, Widget child) {
+  return Tooltip(
+    message: message,
+    preferBelow: false,
+    verticalOffset: 20,
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: 0.85),
+      borderRadius: BorderRadius.circular(6),
+    ),
+    textStyle: const TextStyle(
+      color: Colors.white,
+      fontSize: 12,
+      fontWeight: FontWeight.w500,
+    ),
+    child: child,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +258,7 @@ class _DesktopFileBrowser extends ConsumerWidget {
     final nestedGroups = ref.watch(nestedGroupedFileListProvider);
     final extensionGroups = ref.watch(extensionGroupedFileListProvider);
     final scanState = ref.watch(fileScanStateProvider);
+    final remoteDeviceIp = ref.watch(selectedDeviceIpProvider);
     // 预热分组缓存，确保切换开关时即时响应
     ref.watch(groupCacheWarmupProvider);
 
@@ -270,6 +289,9 @@ class _DesktopFileBrowser extends ConsumerWidget {
                   ref.read(desktopColumnModeProvider.notifier).mode = mode;
                 },
                 onAddCategory: () => showAddCategoryDesktopDrawer(context),
+                onRefresh: () {
+                  ref.read(fileListProvider.notifier).forceRefresh();
+                },
                 onRemoveCategory: (name) {
                   ref.read(customCategoriesProvider.notifier).removeCategory(name);
                 },
@@ -305,6 +327,7 @@ class _DesktopFileBrowser extends ConsumerWidget {
                           extensionGroups: extensionGroups,
                           nestedGroups: nestedGroups,
                           scanState: scanState,
+                          remoteDeviceIp: remoteDeviceIp,
                           onFileTap: (file) => _openFile(context, ref, file),
                         ),
                       ),
@@ -327,6 +350,7 @@ class _DesktopFileBrowser extends ConsumerWidget {
 /// 根据分组模式渲染不同的内容区
 ///
 /// 切换分组模式时显示短暂 loading，避免大量文件渲染造成卡顿无反馈。
+/// 包含返回顶部悬浮按钮：当滚动位置超过阈值时显示。
 class _FileContentArea extends StatefulWidget {
   final bool timelineGroup;
   final bool extensionGroup;
@@ -338,6 +362,7 @@ class _FileContentArea extends StatefulWidget {
   final List<NestedTimelineGroup> nestedGroups;
   final FileScanState scanState;
   final void Function(FileItem)? onFileTap;
+  final String? remoteDeviceIp;
 
   const _FileContentArea({
     required this.timelineGroup,
@@ -350,6 +375,7 @@ class _FileContentArea extends StatefulWidget {
     required this.nestedGroups,
     required this.scanState,
     this.onFileTap,
+    this.remoteDeviceIp,
   });
 
   @override
@@ -363,6 +389,40 @@ class _FileContentAreaState extends State<_FileContentArea> {
   /// 上一次的分组模式（用于检测变化）
   bool? _prevTimelineGroup;
   bool? _prevExtensionGroup;
+
+  /// 共享滚动控制器（用于返回顶部功能）
+  final ScrollController _scrollController = ScrollController();
+
+  /// 是否显示返回顶部按钮
+  bool _showBackToTop = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    final shouldShow = _scrollController.offset > 300;
+    if (shouldShow != _showBackToTop) {
+      setState(() => _showBackToTop = shouldShow);
+    }
+  }
+
+  void _scrollToTop() {
+    _scrollController.animateTo(
+      0,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
+  }
 
   @override
   void didUpdateWidget(covariant _FileContentArea oldWidget) {
@@ -389,6 +449,8 @@ class _FileContentAreaState extends State<_FileContentArea> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = AppColorScheme.of(context);
+
     // 加载中状态（文件扫描中）
     if (widget.scanState == FileScanState.idle ||
         widget.scanState == FileScanState.scanning) {
@@ -409,6 +471,54 @@ class _FileContentAreaState extends State<_FileContentArea> {
       return const _LoadingState();
     }
 
+    return Stack(
+      children: [
+        _buildContent(),
+        // 返回顶部悬浮按钮
+        if (_showBackToTop)
+          Positioned(
+            bottom: 16,
+            right: 16,
+            child: GestureDetector(
+              onTap: _scrollToTop,
+              child: Tooltip(
+                message: AppStrings.backToTop,
+                preferBelow: false,
+                verticalOffset: 20,
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                textStyle: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: colors.cardBg,
+                    shape: BoxShape.circle,
+                    boxShadow: NeuomorphicStyle.adaptive(
+                      Theme.of(context).brightness,
+                      blur: 16,
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.arrow_upward,
+                    color: colors.iconPrimary,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildContent() {
     // 时间轴 + 后缀嵌套分组（时间轴优先）
     if (widget.timelineGroup && widget.extensionGroup) {
       return _TimelineExtensionView(
@@ -416,6 +526,8 @@ class _FileContentAreaState extends State<_FileContentArea> {
         showFileName: widget.showFileName,
         crossAxisCount: widget.crossAxisCount,
         onFileTap: widget.onFileTap,
+        remoteDeviceIp: widget.remoteDeviceIp,
+        scrollController: _scrollController,
       );
     }
     // 仅时间轴分组
@@ -425,6 +537,8 @@ class _FileContentAreaState extends State<_FileContentArea> {
         showFileName: widget.showFileName,
         crossAxisCount: widget.crossAxisCount,
         onFileTap: widget.onFileTap,
+        remoteDeviceIp: widget.remoteDeviceIp,
+        scrollController: _scrollController,
       );
     }
     // 仅后缀分组
@@ -434,6 +548,8 @@ class _FileContentAreaState extends State<_FileContentArea> {
         showFileName: widget.showFileName,
         crossAxisCount: widget.crossAxisCount,
         onFileTap: widget.onFileTap,
+        remoteDeviceIp: widget.remoteDeviceIp,
+        scrollController: _scrollController,
       );
     }
     // 平铺模式
@@ -441,6 +557,7 @@ class _FileContentAreaState extends State<_FileContentArea> {
       builder: (context, constraints) {
         final count = _calcCrossAxisCount(constraints.maxWidth);
         return GridView.builder(
+          controller: _scrollController,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: count,
@@ -452,6 +569,7 @@ class _FileContentAreaState extends State<_FileContentArea> {
           itemBuilder: (context, index) => FileListItem(
             file: widget.files[index],
             showFileName: widget.showFileName,
+            remoteDeviceIp: widget.remoteDeviceIp,
             onTap: widget.onFileTap != null
                 ? () => widget.onFileTap!(widget.files[index])
                 : null,
@@ -480,6 +598,7 @@ class _DesktopSidebar extends StatelessWidget {
   final ValueChanged<String> onDeviceTap;
   final ValueChanged<ColumnMode> onColumnModeChanged;
   final VoidCallback onAddCategory;
+  final VoidCallback onRefresh;
   final ValueChanged<String> onRemoveCategory;
 
   const _DesktopSidebar({
@@ -492,6 +611,7 @@ class _DesktopSidebar extends StatelessWidget {
     required this.onDeviceTap,
     required this.onColumnModeChanged,
     required this.onAddCategory,
+    required this.onRefresh,
     required this.onRemoveCategory,
   });
 
@@ -589,16 +709,23 @@ class _DesktopSidebar extends StatelessWidget {
             const SizedBox(height: 8),
             Row(
               children: [
-                Expanded(
+                Tooltip(
+                  message: AppStrings.refresh,
+                  preferBelow: false,
+                  verticalOffset: 20,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.85),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  textStyle: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
                   child: SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: onAddCategory,
-                      icon: const Icon(Icons.add, size: 18),
-                      label: Text(
-                        AppStrings.addCategory,
-                        style: const TextStyle(fontSize: 13),
-                      ),
+                    width: 44,
+                    child: OutlinedButton(
+                      onPressed: onRefresh,
                       style: OutlinedButton.styleFrom(
                         foregroundColor: colors.textPrimary,
                         side: BorderSide(color: colors.inputBorder),
@@ -607,24 +734,79 @@ class _DesktopSidebar extends StatelessWidget {
                           borderRadius: BorderRadius.circular(10),
                         ),
                       ),
+                      child: const Icon(Icons.refresh, size: 18),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Tooltip(
+                    message: AppStrings.addCategory,
+                    preferBelow: false,
+                    verticalOffset: 20,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    textStyle: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: onAddCategory,
+                        icon: const Icon(Icons.add, size: 18),
+                        label: Text(
+                          // 三个按钮同时出现时简化为"分类"，避免拥挤
+                          isCustomSelected ? '分类' : AppStrings.addCategory,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: colors.textPrimary,
+                          side: BorderSide(color: colors.inputBorder),
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 10,
+                            horizontal: 8,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
                 if (isCustomSelected) ...[
                   const SizedBox(width: 8),
-                  SizedBox(
-                    width: 44,
-                    child: OutlinedButton(
-                      onPressed: () => onRemoveCategory(selectedCategory),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.red,
-                        side: const BorderSide(color: Colors.red),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
+                  Tooltip(
+                    message: AppStrings.deleteCategory,
+                    preferBelow: false,
+                    verticalOffset: 20,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    textStyle: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    child: SizedBox(
+                      width: 44,
+                      child: OutlinedButton(
+                        onPressed: () => onRemoveCategory(selectedCategory),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red,
+                          side: const BorderSide(color: Colors.red),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                         ),
+                        child: const Icon(Icons.delete_outline, size: 18),
                       ),
-                      child: const Icon(Icons.delete_outline, size: 18),
                     ),
                   ),
                 ],
@@ -714,6 +896,7 @@ class _MobileFileBrowser extends ConsumerWidget {
     final timelineGroup = ref.watch(timelineGroupProvider);
     final extensionGroup = ref.watch(extensionGroupProvider);
     final scanState = ref.watch(fileScanStateProvider);
+    final remoteDeviceIp = ref.watch(selectedDeviceIpProvider);
     final colors = AppColorScheme.of(context);
     // 预热分组缓存，确保切换开关时即时响应
     ref.watch(groupCacheWarmupProvider);
@@ -812,6 +995,9 @@ class _MobileFileBrowser extends ConsumerWidget {
                   ref.read(fileCategoryProvider.notifier).category = name;
                 },
                 onAddCategory: () => showAddCategoryMobileSheet(context),
+                onRefresh: () {
+                  ref.read(fileListProvider.notifier).forceRefresh();
+                },
                 onRemoveCategory: (name) {
                   ref.read(customCategoriesProvider.notifier).removeCategory(name);
                 },
@@ -824,6 +1010,9 @@ class _MobileFileBrowser extends ConsumerWidget {
                   ref.read(fileCategoryProvider.notifier).category = name;
                 },
                 onAddCategory: () => showAddCategoryMobileSheet(context),
+                onRefresh: () {
+                  ref.read(fileListProvider.notifier).forceRefresh();
+                },
                 onRemoveCategory: (name) {
                   ref.read(customCategoriesProvider.notifier).removeCategory(name);
                 },
@@ -845,6 +1034,7 @@ class _MobileFileBrowser extends ConsumerWidget {
                 extensionGroups: extensionGroups,
                 nestedGroups: nestedGroups,
                 scanState: scanState,
+                remoteDeviceIp: remoteDeviceIp,
                 onFileTap: (file) => _openFile(context, ref, file),
               ),
             ),
@@ -861,6 +1051,7 @@ class _MobileDropdownCategoryBar extends StatelessWidget {
   final String selectedCategory;
   final ValueChanged<String> onTap;
   final VoidCallback onAddCategory;
+  final VoidCallback onRefresh;
   final ValueChanged<String> onRemoveCategory;
 
   const _MobileDropdownCategoryBar({
@@ -868,6 +1059,7 @@ class _MobileDropdownCategoryBar extends StatelessWidget {
     required this.selectedCategory,
     required this.onTap,
     required this.onAddCategory,
+    required this.onRefresh,
     required this.onRemoveCategory,
   });
 
@@ -907,33 +1099,56 @@ class _MobileDropdownCategoryBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          OutlinedButton(
-            onPressed: onAddCategory,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: colors.iconActive,
-              side: BorderSide(color: colors.inputBorder),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              minimumSize: const Size(44, 44),
-            ),
-            child: const Icon(Icons.add, size: 20),
-          ),
-          if (isCustomSelected) ...[
-            const SizedBox(width: 8),
+          _actionTooltip(
+            AppStrings.refresh,
             OutlinedButton(
-              onPressed: () => onRemoveCategory(selectedCategory),
+              onPressed: onRefresh,
               style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.red,
-                side: const BorderSide(color: Colors.red),
+                foregroundColor: colors.iconActive,
+                side: BorderSide(color: colors.inputBorder),
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
                 minimumSize: const Size(44, 44),
               ),
-              child: const Icon(Icons.delete_outline, size: 20),
+              child: const Icon(Icons.refresh, size: 20),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _actionTooltip(
+            AppStrings.addCategory,
+            OutlinedButton(
+              onPressed: onAddCategory,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: colors.iconActive,
+                side: BorderSide(color: colors.inputBorder),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                minimumSize: const Size(44, 44),
+              ),
+              child: const Icon(Icons.add, size: 20),
+            ),
+          ),
+          if (isCustomSelected) ...[
+            const SizedBox(width: 8),
+            _actionTooltip(
+              AppStrings.deleteCategory,
+              OutlinedButton(
+                onPressed: () => onRemoveCategory(selectedCategory),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.red,
+                  side: const BorderSide(color: Colors.red),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  minimumSize: const Size(44, 44),
+                ),
+                child: const Icon(Icons.delete_outline, size: 20),
+              ),
             ),
           ],
         ],
@@ -948,6 +1163,7 @@ class _MobileListCategoryBar extends StatelessWidget {
   final String selectedCategory;
   final ValueChanged<String> onTap;
   final VoidCallback onAddCategory;
+  final VoidCallback onRefresh;
   final ValueChanged<String> onRemoveCategory;
 
   const _MobileListCategoryBar({
@@ -955,6 +1171,7 @@ class _MobileListCategoryBar extends StatelessWidget {
     required this.selectedCategory,
     required this.onTap,
     required this.onAddCategory,
+    required this.onRefresh,
     required this.onRemoveCategory,
   });
 
@@ -987,41 +1204,63 @@ class _MobileListCategoryBar extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
+              _actionTooltip(
+                AppStrings.refresh,
+                OutlinedButton(
+                  onPressed: onRefresh,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: colors.iconActive,
+                    side: BorderSide(color: colors.inputBorder),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Icon(Icons.refresh, size: 18),
+                ),
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: OutlinedButton.icon(
-                    onPressed: onAddCategory,
-                    icon: Icon(Icons.add, size: 18, color: colors.iconActive),
-                    label: Text(
-                      AppStrings.addCategory,
-                      style: TextStyle(fontSize: 13, color: colors.iconActive),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: colors.iconActive,
-                      side: BorderSide(color: colors.inputBorder),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
+                  child: _actionTooltip(
+                    AppStrings.addCategory,
+                    OutlinedButton.icon(
+                      onPressed: onAddCategory,
+                      icon: Icon(Icons.add, size: 18, color: colors.iconActive),
+                      label: Text(
+                        AppStrings.addCategory,
+                        style: TextStyle(fontSize: 13, color: colors.iconActive),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: colors.iconActive,
+                        side: BorderSide(color: colors.inputBorder),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
               if (isCustomSelected)
-                OutlinedButton.icon(
-                  onPressed: () => onRemoveCategory(selectedCategory),
-                  icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
-                  label: const Text(
-                    '删除',
-                    style: TextStyle(fontSize: 13, color: Colors.red),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    side: const BorderSide(color: Colors.red),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
+                _actionTooltip(
+                  AppStrings.deleteCategory,
+                  OutlinedButton.icon(
+                    onPressed: () => onRemoveCategory(selectedCategory),
+                    icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                    label: const Text(
+                      '删除',
+                      style: TextStyle(fontSize: 13, color: Colors.red),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
                     ),
                   ),
                 ),
@@ -1043,12 +1282,16 @@ class _TimelineView extends StatefulWidget {
   final bool showFileName;
   final int crossAxisCount;
   final void Function(FileItem)? onFileTap;
+  final String? remoteDeviceIp;
+  final ScrollController scrollController;
 
   const _TimelineView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
     this.onFileTap,
+    this.remoteDeviceIp,
+    required this.scrollController,
   });
 
   @override
@@ -1056,14 +1299,6 @@ class _TimelineView extends StatefulWidget {
 }
 
 class _TimelineViewState extends State<_TimelineView> {
-  final ScrollController _scrollController = ScrollController();
-
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
@@ -1116,6 +1351,7 @@ class _TimelineViewState extends State<_TimelineView> {
             (context, index) => FileListItem(
               file: group.files[index],
               showFileName: widget.showFileName,
+              remoteDeviceIp: widget.remoteDeviceIp,
               onTap: widget.onFileTap != null
                   ? () => widget.onFileTap!(group.files[index])
                   : null,
@@ -1138,7 +1374,7 @@ class _TimelineViewState extends State<_TimelineView> {
           child: ScrollConfiguration(
             behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
             child: CustomScrollView(
-              controller: _scrollController,
+              controller: widget.scrollController,
               slivers: slivers,
             ),
           ),
@@ -1146,7 +1382,7 @@ class _TimelineViewState extends State<_TimelineView> {
         // 右侧时间轴进度条（3/4 高度）
         _TimelineScrollbar(
           groups: widget.groups,
-          scrollController: _scrollController,
+          scrollController: widget.scrollController,
         ),
       ],
     );
@@ -1163,12 +1399,16 @@ class _ExtensionView extends StatelessWidget {
   final bool showFileName;
   final int crossAxisCount;
   final void Function(FileItem)? onFileTap;
+  final String? remoteDeviceIp;
+  final ScrollController scrollController;
 
   const _ExtensionView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
     this.onFileTap,
+    this.remoteDeviceIp,
+    required this.scrollController,
   });
 
   @override
@@ -1223,6 +1463,7 @@ class _ExtensionView extends StatelessWidget {
             (context, index) => FileListItem(
               file: group.files[index],
               showFileName: showFileName,
+              remoteDeviceIp: remoteDeviceIp,
               onTap: onFileTap != null
                   ? () => onFileTap!(group.files[index])
                   : null,
@@ -1241,6 +1482,7 @@ class _ExtensionView extends StatelessWidget {
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
       child: CustomScrollView(
+        controller: scrollController,
         slivers: slivers,
       ),
     );
@@ -1257,12 +1499,16 @@ class _TimelineExtensionView extends StatelessWidget {
   final bool showFileName;
   final int crossAxisCount;
   final void Function(FileItem)? onFileTap;
+  final String? remoteDeviceIp;
+  final ScrollController scrollController;
 
   const _TimelineExtensionView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
     this.onFileTap,
+    this.remoteDeviceIp,
+    required this.scrollController,
   });
 
   @override
@@ -1345,6 +1591,7 @@ class _TimelineExtensionView extends StatelessWidget {
               (context, index) => FileListItem(
                 file: extGroup.files[index],
                 showFileName: showFileName,
+                remoteDeviceIp: remoteDeviceIp,
                 onTap: onFileTap != null
                     ? () => onFileTap!(extGroup.files[index])
                     : null,
@@ -1364,6 +1611,7 @@ class _TimelineExtensionView extends StatelessWidget {
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
       child: CustomScrollView(
+        controller: scrollController,
         slivers: slivers,
       ),
     );

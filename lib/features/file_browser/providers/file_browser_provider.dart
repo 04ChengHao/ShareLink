@@ -10,7 +10,9 @@ import '../../device_discovery/providers/device_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/file_category.dart';
 import '../models/file_item.dart';
+import '../services/file_cache_service.dart';
 import '../services/local_file_service.dart';
+import '../services/remote_file_service.dart';
 
 // ===========================================================================
 // 设备选择
@@ -53,6 +55,28 @@ final effectiveSelectedDeviceProvider = Provider<String?>((ref) {
     return connectedDevices.first.name;
   }
   return null;
+});
+
+/// 选中设备的 IP 地址（null 表示本机）
+final selectedDeviceIpProvider = Provider<String?>((ref) {
+  final deviceName = ref.watch(effectiveSelectedDeviceProvider);
+  if (deviceName == null) return null;
+  final connectedDevices = ref.watch(connectedDevicesProvider);
+  final device = connectedDevices.firstWhere(
+    (d) => d.name == deviceName,
+    orElse: () => connectedDevices.first,
+  );
+  return device.ip;
+});
+
+/// 是否正在浏览远程设备文件
+final isRemoteBrowsingProvider = Provider<bool>((ref) {
+  return ref.watch(effectiveSelectedDeviceProvider) != null;
+});
+
+/// 远程文件服务实例
+final remoteFileServiceProvider = Provider<RemoteFileService>((ref) {
+  return RemoteFileService.instance;
 });
 
 // ===========================================================================
@@ -371,37 +395,122 @@ class FileListNotifier extends Notifier<List<FileItem>> {
   List<FileItem> build() {
     // Watch 共享内容设置 — 设置变化时 Notifier 自动重建，触发重新扫描
     ref.watch(sharedContentProvider);
+    // Watch 选中设备 — 设备切换时自动重新加载文件列表
+    final deviceIp = ref.watch(selectedDeviceIpProvider);
     // 清除所有分类缓存，确保用新路径重新扫描
     ref.read(localFileServiceProvider).clearAllCaches();
-    // 触发扫描
-    Future.microtask(() => scanFiles());
+    // 触发扫描（本机或远程）
+    Future.microtask(() => scanFiles(deviceIp));
     return [];
   }
 
-  /// 扫描共享文件夹，更新文件列表
-  Future<void> scanFiles() async {
-    final settings = ref.read(sharedContentProvider);
-    final service = ref.read(localFileServiceProvider);
+  /// 扫描文件（本机或远程）
+  ///
+  /// 远程设备采用 **缓存优先 + 后台增量同步** 策略：
+  /// 1. 先尝试读取本地缓存的文件列表，若有则立即返回（避免等待）
+  /// 2. 后台拉取最新列表，与缓存做 uniqueKey 差集对比
+  /// 3. 若有变化才更新 state；无变化则保持当前列表（避免无谓 rebuild）
+  /// 4. 首次访问无缓存时，正常显示 loading 状态直到拉取完成
+  Future<void> scanFiles(String? deviceIp) async {
+    final scanStateNotifier = ref.read(fileScanStateProvider.notifier);
 
-    ref.read(fileScanStateProvider.notifier).set(FileScanState.scanning);
+    if (deviceIp == null) {
+      // 本机文件扫描
+      scanStateNotifier.set(FileScanState.scanning);
+      final settings = ref.read(sharedContentProvider);
+      final service = ref.read(localFileServiceProvider);
+      final files = await service.scanFiles(settings);
+      state = files;
+      scanStateNotifier.set(
+        files.isEmpty ? FileScanState.empty : FileScanState.done,
+      );
+      return;
+    }
 
-    final files = await service.scanFiles(settings);
+    // 远程设备：缓存优先策略
+    final remoteService = ref.read(remoteFileServiceProvider);
+    final cached = await remoteService.getCachedFileList(deviceIp);
+
+    if (cached != null && cached.isNotEmpty) {
+      // 立即显示缓存数据，无需 loading
+      state = cached;
+      scanStateNotifier.set(FileScanState.done);
+
+      // 后台拉取最新列表，做增量对比
+      _syncRemoteInBackground(deviceIp, cached);
+      return;
+    }
+
+    // 无缓存：正常显示 loading，等待首次拉取
+    scanStateNotifier.set(FileScanState.scanning);
+    final files = await remoteService.fetchRemoteFileList(deviceIp);
     state = files;
+    scanStateNotifier.set(
+      files.isEmpty ? FileScanState.empty : FileScanState.done,
+    );
+  }
 
-    if (files.isEmpty) {
-      ref.read(fileScanStateProvider.notifier).set(FileScanState.empty);
-    } else {
-      ref.read(fileScanStateProvider.notifier).set(FileScanState.done);
+  /// 后台增量同步远程文件列表
+  ///
+  /// 拉取最新列表后与缓存对比，仅在发生变化时更新 state。
+  Future<void> _syncRemoteInBackground(
+    String deviceIp,
+    List<FileItem> cachedFiles,
+  ) async {
+    try {
+      final remoteService = ref.read(remoteFileServiceProvider);
+      final latest = await remoteService.fetchRemoteFileList(deviceIp);
+
+      // 设备可能已切换，确认仍是同一设备
+      final currentIp = ref.read(selectedDeviceIpProvider);
+      if (currentIp != deviceIp) return;
+
+      if (FileCacheService.instance.hasChanges(cachedFiles, latest)) {
+        state = latest;
+      }
+      // 无变化则保持当前 state，避免无谓 rebuild
+    } catch (e) {
+      // 后台同步失败静默处理，下次再试
+      debugPrint('[FileListNotifier] 后台同步远程文件失败: $e');
     }
   }
 
   /// 检查文件变更并按需刷新（选择分类时调用）
   Future<void> refreshIfNeeded() async {
-    final settings = ref.read(sharedContentProvider);
-    final service = ref.read(localFileServiceProvider);
+    final deviceIp = ref.read(selectedDeviceIpProvider);
+    if (deviceIp == null) {
+      // 本机文件：检查变更
+      final settings = ref.read(sharedContentProvider);
+      final service = ref.read(localFileServiceProvider);
+      if (await service.hasChanges(settings)) {
+        await scanFiles(null);
+      }
+    } else {
+      // 远程文件：触发后台增量同步（不阻塞 UI）
+      final cached = await ref
+          .read(remoteFileServiceProvider)
+          .getCachedFileList(deviceIp);
+      if (cached != null) {
+        await _syncRemoteInBackground(deviceIp, cached);
+      } else {
+        await scanFiles(deviceIp);
+      }
+    }
+  }
 
-    if (await service.hasChanges(settings)) {
-      await scanFiles();
+  /// 强制重新扫描当前分类的文件（用户点击刷新按钮时调用）
+  ///
+  /// 本机：强制执行一次完整扫描。
+  /// 远程：清除该设备缓存后强制重新拉取，确保显示最新文件列表。
+  Future<void> forceRefresh() async {
+    final deviceIp = ref.read(selectedDeviceIpProvider);
+    if (deviceIp == null) {
+      // 本机：强制重新扫描全部共享文件夹
+      await scanFiles(null);
+    } else {
+      // 远程：清除该设备缓存后强制重新拉取（显示 loading）
+      await FileCacheService.instance.clearCache(deviceIp);
+      await scanFiles(deviceIp);
     }
   }
 }

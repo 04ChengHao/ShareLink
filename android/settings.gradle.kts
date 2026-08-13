@@ -11,12 +11,11 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
-        maven {
-            url = uri("https://maven.aliyun.com/repository/public")
-            url = uri("https://maven.aliyun.com/repository/google")
-            url = uri("https://maven.aliyun.com/repository/jcenter")
-            url = uri("https://maven.aliyun.com/repository/maven-central")
-        }
+        // 阿里云国内镜像（必须放在 google()/mavenCentral() 之前，优先使用）
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/jcenter") }
+        maven { url = uri("https://maven.aliyun.com/repository/maven-central") }
         google()
         mavenCentral()
         gradlePluginPortal()
