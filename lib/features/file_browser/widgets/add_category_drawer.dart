@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
+import '../../../shared/widgets/app_toast.dart';
 import 'add_category_form.dart';
 
 /// 桌面端添加分类右侧抽屉弹窗
 void showAddCategoryDesktopDrawer(BuildContext context) {
-  final messenger = ScaffoldMessenger.of(context);
   showGeneralDialog(
     context: context,
     barrierDismissible: true,
@@ -24,17 +24,13 @@ void showAddCategoryDesktopDrawer(BuildContext context) {
       return SlideTransition(position: offset, child: child);
     },
     pageBuilder: (context, animation, secondaryAnimation) {
-      return _AddCategoryDesktopDrawer(
-        messenger: messenger,
-      );
+      return const _AddCategoryDesktopDrawer();
     },
   );
 }
 
 class _AddCategoryDesktopDrawer extends StatelessWidget {
-  final ScaffoldMessengerState messenger;
-
-  const _AddCategoryDesktopDrawer({required this.messenger});
+  const _AddCategoryDesktopDrawer();
 
   @override
   Widget build(BuildContext context) {
@@ -97,13 +93,7 @@ class _AddCategoryDesktopDrawer extends StatelessWidget {
                   padding: const EdgeInsets.all(24),
                   child: AddCategoryForm(
                     onSaved: (name) {
-                      messenger.showSnackBar(
-                        SnackBar(
-                          content: Text('分类「$name」添加成功'),
-                          behavior: SnackBarBehavior.floating,
-                          duration: const Duration(seconds: 2),
-                        ),
-                      );
+                      showAppToast(context, '分类「$name」添加成功', type: ToastType.success);
                       Navigator.of(context).pop();
                     },
                   ),

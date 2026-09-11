@@ -27,8 +27,11 @@ class StorageKeys {
   static const filterTimelineGroup = 'filter_timeline_group';
   static const filterExtensionGroup = 'filter_extension_group';
   static const filterSortAscending = 'filter_sort_ascending';
+  static const filterOnlyDownloaded = 'filter_only_downloaded';
   static const desktopColumnMode = 'desktop_column_mode';
   static const mobileCategoryDisplayMode = 'mobile_category_display_mode';
+  static const downloads = 'downloads_registry';
+  static const mediaDurations = 'media_durations';
 }
 
 // =============================================================================

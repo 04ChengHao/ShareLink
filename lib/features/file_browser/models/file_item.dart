@@ -24,13 +24,32 @@ class FileItem {
   final int? size;
   final DateTime? modifiedAt;
 
+  /// 媒体（视频/音频）时长（毫秒），由分享端在扫描时用原生 API 获取并随元数据下发
+  final int? duration;
+
+  /// ts 视频分片路径列表（某目录下多个 .ts 片段合并成一个视频时使用）
+  final List<String>? tsFragments;
+
   const FileItem({
     required this.name,
     required this.path,
     this.isDirectory = false,
     this.size,
     this.modifiedAt,
+    this.duration,
+    this.tsFragments,
   });
+
+  /// 复制并修改部分字段（扫描时用于填充媒体时长）
+  FileItem copyWith({int? duration}) => FileItem(
+        name: name,
+        path: path,
+        isDirectory: isDirectory,
+        size: size,
+        modifiedAt: modifiedAt,
+        duration: duration ?? this.duration,
+        tsFragments: tsFragments,
+      );
 
   String get extension {
     final index = name.lastIndexOf('.');
@@ -119,6 +138,9 @@ class FileItem {
 
   /// 是否有可显示的封面（图片或视频）
   bool get hasCover => isImage || isVideo;
+
+  /// 是否为 ts 分片合并视频
+  bool get isMergedTs => tsFragments != null && tsFragments!.isNotEmpty;
 
   /// 文件唯一标识（路径 + 大小 + 修改时间）
   String get uniqueKey => '$path|${size ?? 0}|${modifiedAt?.millisecondsSinceEpoch ?? 0}';

@@ -119,6 +119,7 @@ class FileCacheService {
         'size': f.size,
         'modifiedAt': f.modifiedAt?.millisecondsSinceEpoch,
         'isDirectory': f.isDirectory,
+        'duration': f.duration,
       };
 
   FileItem _fileItemFromJson(Map<String, dynamic> json) => FileItem(
@@ -129,5 +130,6 @@ class FileCacheService {
             ? DateTime.fromMillisecondsSinceEpoch(json['modifiedAt'] as int)
             : null,
         isDirectory: json['isDirectory'] as bool? ?? false,
+        duration: json['duration'] as int?,
       );
 }

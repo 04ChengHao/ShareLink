@@ -36,6 +36,13 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
   StreamSubscription<DevicePresenceEvent>? _presenceSub;
   StreamSubscription<OutboundDisconnectEvent>? _outboundSub;
 
+  /// 用户**主动断开**（非对端离线）的设备 id 集合
+  ///
+  /// 这些设备仍在线（beacon 持续到达），但不参与自动重连——
+  /// 尊重用户"手动断开"的意图，直到用户再次手动连接成功
+  /// （[onConnected]）后清除标记。
+  final Set<String> _manuallyDisconnected = {};
+
   @override
   List<Device> build() {
     _store = PreviouslyConnectedStore(ref.read(sharedPrefsProvider));
@@ -71,6 +78,15 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
           current.ip == event.device.ip &&
           current.name == newName &&
           current.hasPassword == event.device.hasPassword) {
+        // 状态未变不重建列表，但设备可能处于「在线而连接未建立」：
+        // - app 启动/从后台恢复后 connStates 已重置为 unconnected，
+        //   而 isOnline 从持久化恢复为 true，直接 return 会卡住自动重连；
+        // - 此时仍需尝试自动连接。_autoConnect 内部有连接状态幂等
+        //   （已连接/连接中直接跳过），不会重复发起。
+        // 手动断开的设备不自动重连（尊重用户意图）。
+        if (!_manuallyDisconnected.contains(current.id)) {
+          _autoConnect(event.device);
+        }
         return;
       }
 
@@ -165,6 +181,8 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
     // 主动断开（用户点击断开 / 移除设备）不改变在线状态，设备仍在线。
     if (!event.isPassive) {
       debugPrint('[PrevConnected] 主动断开，保持在线状态: $deviceId');
+      // 标记手动断开：后续 beacon 幂等到达时不自动重连，直到用户再次手动连接
+      _manuallyDisconnected.add(deviceId);
       return;
     }
 
@@ -183,6 +201,8 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
 
   /// 成功连接后调用
   void onConnected(Device device, {String? password}) {
+    // 手动重新连接成功 → 清除"手动断开"标记，恢复自动重连资格
+    _manuallyDisconnected.remove(device.id);
     _store.add(device, password: password);
     // 用最新的运行时设备信息刷新内存状态（含 isOnline=true）
     state = _store.list().map((d) {
@@ -200,6 +220,7 @@ class PreviouslyConnectedNotifier extends Notifier<List<Device>> {
 
   /// 移除设备（同时清除连接状态 + 断开 WebSocket）
   void remove(String id) {
+    _manuallyDisconnected.remove(id);
     _store.remove(id);
     state = _store.list();
     // 清除连接状态 UI
@@ -244,6 +265,7 @@ final deviceServiceProvider = Provider<DeviceService>((ref) {
         path: f.path,
         size: f.size,
         modifiedAt: f.modifiedAt?.millisecondsSinceEpoch,
+        duration: f.duration,
       )).toList();
     },
     sharedRootsGetter: () {

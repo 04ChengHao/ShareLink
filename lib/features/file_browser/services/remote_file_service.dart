@@ -5,8 +5,10 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/services/app_cache_directory.dart';
+import '../../../core/services/app_image_cache_manager.dart';
 import '../models/file_item.dart';
 import 'file_cache_service.dart';
+import 'local_file_service.dart';
 
 /// 远程文件服务
 ///
@@ -22,8 +24,9 @@ import 'file_cache_service.dart';
 /// **临时文件管理**：
 /// - 临时目录：统一使用全局缓存目录 [AppCacheDirectory]（`share_link_cache/`）
 ///   与视频缩略图等缓存同目录，便于统一统计大小与清理
-/// - 清理策略：每 10 分钟清理一次，删除超过 30 分钟未访问的文件
-/// - 应用启动时清空整个全局缓存目录
+/// - 定时清理：每 10 分钟一次，删除超过 30 分钟的一次性临时文件；
+///   本地文件索引、缩略图、ts 合并等持久缓存不受影响（仅可手动清除）
+/// - 应用启动时：仅清理一次性临时文件，保留持久缓存供复用
 ///
 /// **文件列表缓存**：
 /// - 通过 [FileCacheService] 持久化到 SharedPreferences
@@ -96,7 +99,43 @@ class RemoteFileService {
     }
   }
 
+  /// 应用启动时的缓存清理：仅清理一次性的临时文件，
+  /// 保留本地文件索引、视频缩略图、ts 合并等**持久化**缓存，
+  /// 避免每次启动都把可复用的文件管理缓存清空（影响"重启不失效"体验）。
+  Future<void> cleanupStartupCache() async {
+    try {
+      final dirPath = await _tempCacheDir;
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) return;
+      await for (final entity in dir.list()) {
+        final name = entity.uri.pathSegments.last;
+        // 保留重建代价高的持久化缓存（含远程图片缓存目录）
+        if (name == LocalFileService.indexFileName ||
+            name.startsWith('thumb_') ||
+            name.startsWith('ts_merged_') ||
+            name == AppImageCacheManager.dirName) {
+          continue;
+        }
+        try {
+          if (entity is Directory) {
+            await entity.delete(recursive: true);
+          } else {
+            await entity.delete();
+          }
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('[RemoteFileService] 启动缓存清理失败: $e');
+    }
+  }
+
   /// 清理过期的临时文件
+  ///
+  /// 仅清理一次性的临时文件（downloadToTemp 下载的"用系统打开"副本等），
+  /// **持久缓存不参与过期清理**：本地文件索引、视频缩略图、ts 合并文件
+  /// 只能由用户在设置页手动清除。否则应用常驻（安卓前台服务 / 桌面托盘）时，
+  /// 本定时器会在 30 分钟后把可复用缓存全部删掉，导致每次启动都全量重扫、
+  /// 缓存显示归零。
   Future<void> cleanupTempFiles() async {
     try {
       final dirPath = await _tempCacheDir;
@@ -107,6 +146,13 @@ class RemoteFileService {
       final expiredPaths = <String>[];
 
       await for (final entity in dir.list()) {
+        final name = entity.uri.pathSegments.last;
+        // 保留持久化缓存（与 cleanupStartupCache 的保留规则一致）
+        if (name == LocalFileService.indexFileName ||
+            name.startsWith('thumb_') ||
+            name.startsWith('ts_merged_')) {
+          continue;
+        }
         if (entity is File) {
           final stat = await entity.stat();
           if (now.difference(stat.modified) > _maxAge) {
@@ -167,6 +213,7 @@ class RemoteFileService {
               ? DateTime.fromMillisecondsSinceEpoch(map['modifiedAt'] as int)
               : null,
           isDirectory: false,
+          duration: map['duration'] as int?,
         );
       }).toList();
 

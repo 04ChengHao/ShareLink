@@ -175,6 +175,8 @@ class AppStrings {
   static const String videoFullscreen = '全屏';
   static const String videoExitFullscreen = '退出全屏';
   static const String backToTop = '返回顶部';
+  static const String scanningFiles = '正在扫描文件…';
+  static const String tsMergeFailed = '视频分片缺失或损坏，无法播放';
   static const String remoteDeviceOffline = '设备已离线，无法访问文件';
   static const String remoteFileLoadFailed = '无法加载远程文件，请检查设备连接';
 }

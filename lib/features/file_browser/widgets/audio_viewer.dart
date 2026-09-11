@@ -17,10 +17,14 @@ class AudioViewer extends StatefulWidget {
   final String mediaUri;
   final String title;
 
+  /// 当播放器确定媒体真实时长时回调（用于把时长回写入缓存）
+  final void Function(Duration duration)? onDurationKnown;
+
   const AudioViewer({
     super.key,
     required this.mediaUri,
     required this.title,
+    this.onDurationKnown,
   });
 
   @override
@@ -50,8 +54,9 @@ class _AudioViewerState extends State<AudioViewer> {
       _subscriptions.add(_player.stream.position.listen((_) {
         if (mounted) setState(() {});
       }));
-      _subscriptions.add(_player.stream.duration.listen((_) {
+      _subscriptions.add(_player.stream.duration.listen((d) {
         if (mounted) setState(() {});
+        if (d > Duration.zero) widget.onDurationKnown?.call(d);
       }));
       _subscriptions.add(_player.stream.completed.listen((_) {
         if (mounted) setState(() {});

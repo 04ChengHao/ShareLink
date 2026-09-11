@@ -9,8 +9,11 @@ import 'package:open_filex/open_filex.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/utils/platform_utils.dart';
+import '../../../shared/widgets/app_toast.dart';
 import '../models/file_item.dart';
 import '../providers/file_browser_provider.dart';
+import '../services/download_service.dart';
+import '../services/media_duration_service.dart';
 import '../services/remote_file_service.dart';
 import '../widgets/audio_viewer.dart';
 import '../widgets/image_viewer.dart';
@@ -22,7 +25,7 @@ import '../widgets/video_viewer.dart';
 /// 内容区：根据文件类型显示不同的预览器
 /// - 图片：[ImageViewer]（支持鼠标位置缩放、悬浮控制栏、透明网格背景）
 /// - 视频：[VideoViewer]（基于 media_kit，全平台支持，含手势控制和全屏）
-/// - 音频：[AudioViewer]（基于 media_kit，替代 just_audio）
+/// - 音频：[AudioViewer]（基于 media_kit）
 /// - 文本：直接显示文件内容
 /// - 不支持的格式：显示封面图标 + 提示信息
 class FileViewerPage extends ConsumerStatefulWidget {
@@ -40,23 +43,90 @@ class FileViewerPage extends ConsumerStatefulWidget {
 }
 
 class _FileViewerPageState extends ConsumerState<FileViewerPage> {
+  /// 是否正在解析远程文件本地缓存（下载文件夹命中）
+  bool _resolving = true;
+
+  /// 远程文件本地缓存的绝对路径（未命中为 null）
+  String? _localCachePath;
+
+  String get _deviceName =>
+      ref.read(effectiveSelectedDeviceProvider) ?? '本机';
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveLocalCache();
+  }
+
+  /// 查询该文件是否已有本地下载缓存（供预览/打开复用，不触发下载）
+  Future<void> _resolveLocalCache() async {
+    if (widget.remoteDeviceIp == null) {
+      // 本机：ts 分片合并视频需先拼合成可播放文件
+      if (widget.file.isMergedTs) {
+        final mergedPath = await ref
+            .read(localFileServiceProvider)
+            .resolvePlayablePath(widget.file);
+        if (!mounted) return;
+        if (mergedPath == null) {
+          // 分片缺失/读取失败：不能把 null 交给播放器，提示后退出预览
+          setState(() => _resolving = false);
+          showAppToast(context, AppStrings.tsMergeFailed, type: ToastType.error);
+          Navigator.of(context).pop();
+          return;
+        }
+        setState(() {
+          _localCachePath = mergedPath;
+          _resolving = false;
+        });
+        return;
+      }
+      // 本机普通文件无需解析，首帧后关闭 loading（避免 initState 中同步 setState）
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _resolving = false);
+      });
+      return;
+    }
+    final p = await DownloadService.instance.findCachedFile(
+      deviceName: _deviceName,
+      fileName: widget.file.name,
+      size: widget.file.size,
+    );
+    if (mounted) {
+      setState(() {
+        _localCachePath = (p != null && File(p).existsSync()) ? p : null;
+        _resolving = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final file = widget.file;
+
+    // 解析本地缓存（远程文件 / 本机 ts 合并视频）时先显示 loading，避免画面/播放闪断
+    if ((widget.remoteDeviceIp != null || widget.file.isMergedTs) && _resolving) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
 
     // 视频文件单独走全屏路由（不使用 Scaffold AppBar）
     if (file.isVideo) {
       return _VideoPageWrapper(
         file: file,
         remoteDeviceIp: widget.remoteDeviceIp,
+        localPath: _localCachePath,
+        deviceName: _deviceName,
       );
     }
 
     // 图片文件也走全屏沉浸预览（不使用 Scaffold AppBar）
     if (file.isImage) {
       return ImageViewer(
-        imagePath: file.path,
-        remoteDeviceIp: widget.remoteDeviceIp,
+        imagePath: _localCachePath ?? file.path,
+        remoteDeviceIp: _localCachePath != null ? null : widget.remoteDeviceIp,
         onBack: () => Navigator.of(context).pop(),
         onOpenWithSystem: () => _openWithSystem(context, ref),
       );
@@ -94,18 +164,33 @@ class _FileViewerPageState extends ConsumerState<FileViewerPage> {
 
     if (file.isImage) {
       return ImageViewer(
-        imagePath: file.path,
-        remoteDeviceIp: widget.remoteDeviceIp,
+        imagePath: _localCachePath ?? file.path,
+        remoteDeviceIp: _localCachePath != null ? null : widget.remoteDeviceIp,
       );
     }
     if (file.isAudio) {
-      final mediaUri = widget.remoteDeviceIp != null
-          ? RemoteFileService.instance.buildFileUrl(
-              widget.remoteDeviceIp!,
-              file.path,
-            )
-          : 'file://${file.path}';
-      return AudioViewer(mediaUri: mediaUri, title: file.name);
+      final local = _localCachePath;
+      // 本地路径统一用 Uri.file 构造（Windows 下 'file://C:\...' 不是合法 URI）
+      final mediaUri = local != null
+          ? Uri.file(local).toString()
+          : widget.remoteDeviceIp != null
+              ? RemoteFileService.instance.buildFileUrl(
+                  widget.remoteDeviceIp!,
+                  file.path,
+                )
+              : Uri.file(file.path).toString();
+      return AudioViewer(
+        mediaUri: mediaUri,
+        title: file.name,
+        onDurationKnown: (d) {
+          MediaDurationService.instance.cacheDuration(
+            deviceName: _deviceName,
+            fileName: file.name,
+            size: file.size,
+            durationMs: d.inMilliseconds,
+          );
+        },
+      );
     }
     if (file.isText || file.isCode) {
       return _TextViewer(
@@ -120,8 +205,7 @@ class _FileViewerPageState extends ConsumerState<FileViewerPage> {
 
   /// 使用系统应用打开文件
   ///
-  /// 远程文件较大时，显示带进度条和取消按钮的弹窗，
-  /// 替代原来的简单 SnackBar 提示。
+  /// 命中本地下载缓存时直接使用本地文件；未命中远程文件经过临时缓存下载后打开。
   Future<void> _openWithSystem(BuildContext context, WidgetRef ref) async {
     final file = widget.file;
     final isRemote = widget.remoteDeviceIp != null;
@@ -129,28 +213,32 @@ class _FileViewerPageState extends ConsumerState<FileViewerPage> {
     String filePath;
 
     if (isRemote) {
-      // 远程文件：先下载到临时目录，显示进度弹窗
-      final remoteService = ref.read(remoteFileServiceProvider);
-      final tempPath = await _downloadWithProgressDialog(
-        context,
-        remoteService,
-        widget.remoteDeviceIp!,
-        file.path,
+      // 优先复用已下载缓存（不触发下载），未命中再走临时缓存路线
+      final cached = await DownloadService.instance.findCachedFile(
+        deviceName: _deviceName,
+        fileName: file.name,
+        size: file.size,
       );
+      if (cached != null) {
+        filePath = cached;
+      } else {
+        final remoteService = ref.read(remoteFileServiceProvider);
+        final tempPath = await _downloadWithProgressDialog(
+          context,
+          remoteService,
+          widget.remoteDeviceIp!,
+          file.path,
+        );
 
-      if (tempPath == null) {
-        // 用户取消或下载失败
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(AppStrings.fileLoadFailed),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+        if (tempPath == null) {
+          // 用户取消或下载失败
+          if (context.mounted) {
+            showAppToast(context, AppStrings.fileLoadFailed, type: ToastType.error);
+          }
+          return;
         }
-        return;
+        filePath = tempPath;
       }
-      filePath = tempPath;
     } else {
       filePath = file.path;
     }
@@ -159,12 +247,7 @@ class _FileViewerPageState extends ConsumerState<FileViewerPage> {
     final service = ref.read(localFileServiceProvider);
     final success = await service.openFile(filePath);
     if (!success && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('无法打开文件：${file.name}'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      showAppToast(context, '无法打开文件：${file.name}', type: ToastType.error);
     }
   }
 
@@ -199,13 +282,60 @@ class _VideoPageWrapper extends StatefulWidget {
   final FileItem file;
   final String? remoteDeviceIp;
 
-  const _VideoPageWrapper({required this.file, this.remoteDeviceIp});
+  /// 已下载的本地缓存路径（命中时直接用本地文件播放/打开）
+  final String? localPath;
+  final String? deviceName;
+
+  const _VideoPageWrapper({
+    required this.file,
+    this.remoteDeviceIp,
+    this.localPath,
+    this.deviceName,
+  });
 
   @override
   State<_VideoPageWrapper> createState() => _VideoPageWrapperState();
 }
 
 class _VideoPageWrapperState extends State<_VideoPageWrapper> {
+  int? _videoDuration;
+  int? _cachedVideoDuration() {
+    final dn = widget.deviceName;
+    if (dn == null) return null;
+    return MediaDurationService.instance.getCachedDuration(
+      deviceName: dn,
+      fileName: widget.file.name,
+      size: widget.file.size,
+    );
+  }
+  int? _resolvedKnownMs() => _videoDuration ?? _cachedVideoDuration();
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureDuration();
+  }
+
+  Future<void> _ensureDuration() async {
+    // 已有缓存直接返回，不重复探测
+    if (_cachedVideoDuration() != null) return;
+    final dn = widget.deviceName ?? "本机";
+    final file = widget.file;
+    final uri = widget.localPath != null
+        ? Uri.file(widget.localPath!).toString()
+        : widget.remoteDeviceIp != null
+            ? RemoteFileService.instance.buildFileUrl(
+                widget.remoteDeviceIp!, file.path,
+              )
+            : Uri.file(file.path).toString();
+    final d = await MediaDurationService.instance.getDuration(
+      deviceName: dn,
+      fileName: file.name,
+      size: file.size,
+      uri: uri,
+    );
+    if (mounted) setState(() => _videoDuration = d);
+  }
   bool _isFullscreen = false;
 
   @override
@@ -250,12 +380,16 @@ class _VideoPageWrapperState extends State<_VideoPageWrapper> {
   @override
   Widget build(BuildContext context) {
     final file = widget.file;
-    final mediaUri = widget.remoteDeviceIp != null
-        ? RemoteFileService.instance.buildFileUrl(
-            widget.remoteDeviceIp!,
-            file.path,
-          )
-        : 'file://${file.path}';
+    final local = widget.localPath;
+    // 本地路径统一用 Uri.file 构造（Windows 下 'file://C:\...' 不是合法 URI）
+    final mediaUri = local != null
+        ? Uri.file(local).toString()
+        : widget.remoteDeviceIp != null
+            ? RemoteFileService.instance.buildFileUrl(
+                widget.remoteDeviceIp!,
+                file.path,
+              )
+            : Uri.file(file.path).toString();
 
     if (_isFullscreen) {
       // 全屏模式：仅显示视频，无 AppBar
@@ -267,6 +401,17 @@ class _VideoPageWrapperState extends State<_VideoPageWrapper> {
           isFullscreen: true,
           onToggleFullscreen: _toggleFullscreen,
           onBack: _onBack,
+          knownDurationMs: _resolvedKnownMs(),
+          onDurationKnown: (d) {
+            final dn = widget.deviceName;
+            if (dn == null) return;
+            MediaDurationService.instance.cacheDuration(
+              deviceName: dn,
+              fileName: widget.file.name,
+              size: widget.file.size,
+              durationMs: d.inMilliseconds,
+            );
+          },
         ),
       );
     }
@@ -298,55 +443,69 @@ class _VideoPageWrapperState extends State<_VideoPageWrapper> {
         mediaUri: mediaUri,
         title: file.name,
         isFullscreen: false,
+        knownDurationMs: _resolvedKnownMs(),
         onToggleFullscreen: _toggleFullscreen,
+        onDurationKnown: (d) {
+          final dn = widget.deviceName;
+          if (dn == null) return;
+          MediaDurationService.instance.cacheDuration(
+            deviceName: dn,
+            fileName: widget.file.name,
+            size: widget.file.size,
+            durationMs: d.inMilliseconds,
+          );
+        },
       ),
     );
   }
 
   Future<void> _openWithSystemForVideo(BuildContext context) async {
-    // 通过 ProviderContainer 访问 ref
     final container = ProviderScope.containerOf(context);
     final remoteService = container.read(remoteFileServiceProvider);
     final localService = container.read(localFileServiceProvider);
     final file = widget.file;
 
     String filePath;
-    if (widget.remoteDeviceIp != null) {
-      final tempPath = await showDialog<String>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) {
-          return _DownloadProgressDialog(
-            remoteService: remoteService,
-            deviceIp: widget.remoteDeviceIp!,
-            filePath: file.path,
-          );
-        },
+    if (widget.localPath != null && File(widget.localPath!).existsSync()) {
+      filePath = widget.localPath!;
+    } else if (widget.remoteDeviceIp != null) {
+      // 优先复用已下载缓存，未命中走临时缓存路线
+      final deviceName =
+          container.read(effectiveSelectedDeviceProvider) ?? '本机';
+      final cached = await DownloadService.instance.findCachedFile(
+        deviceName: deviceName,
+        fileName: file.name,
+        size: file.size,
       );
-      if (tempPath == null) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(AppStrings.fileLoadFailed),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+      if (cached != null) {
+        filePath = cached;
+      } else {
+        final tempPath = await showDialog<String>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) {
+            return _DownloadProgressDialog(
+              remoteService: remoteService,
+              deviceIp: widget.remoteDeviceIp!,
+              filePath: file.path,
+            );
+          },
+        );
+        if (tempPath == null) {
+          if (context.mounted) {
+            showAppToast(context, AppStrings.fileLoadFailed, type: ToastType.error);
+          }
+          return;
         }
-        return;
+        filePath = tempPath;
       }
-      filePath = tempPath;
     } else {
       filePath = file.path;
     }
 
     final success = await localService.openFile(filePath);
     if (!success && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('无法打开文件：${file.name}'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      showAppToast(context, '无法打开文件：${file.name}', type: ToastType.error);
     }
   }
 }
@@ -518,13 +677,6 @@ class _DownloadProgressDialogState extends State<_DownloadProgressDialog> {
 // 文本预览器
 // =============================================================================
 
-/// 文本预览器
-///
-/// 采用分块流式读取，避免大文件一次性加载导致卡死。
-/// - 本机文件：使用 `openRead` 分块读取，限制最大预览字节数
-/// - 远程文件：通过 HTTP 流式分块接收，限制最大预览字节数
-///
-/// 超过限制时在末尾显示截断提示。
 /// 文本预览器
 ///
 /// 采用分块流式读取，避免大文件一次性加载导致卡死或内存溢出。

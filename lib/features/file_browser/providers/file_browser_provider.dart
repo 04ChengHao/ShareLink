@@ -10,8 +10,10 @@ import '../../device_discovery/providers/device_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 import '../models/file_category.dart';
 import '../models/file_item.dart';
+import '../services/download_service.dart';
 import '../services/file_cache_service.dart';
 import '../services/local_file_service.dart';
+import '../services/media_duration_service.dart';
 import '../services/remote_file_service.dart';
 
 // ===========================================================================
@@ -78,6 +80,47 @@ final isRemoteBrowsingProvider = Provider<bool>((ref) {
 final remoteFileServiceProvider = Provider<RemoteFileService>((ref) {
   return RemoteFileService.instance;
 });
+
+/// 持久下载服务实例
+final downloadServiceProvider = Provider<DownloadService>((ref) {
+  final service = DownloadService.instance;
+  service.init(ref.read(sharedPrefsProvider));
+  return service;
+});
+
+/// 媒体时长探测服务实例
+final mediaDurationServiceProvider = Provider<MediaDurationService>((ref) {
+  final service = MediaDurationService.instance;
+  service.init(ref.read(sharedPrefsProvider));
+  return service;
+});
+
+/// 下载进度状态（key = 文件 uniqueKey，value = 0.0~1.0）
+final downloadProgressProvider =
+    NotifierProvider<DownloadProgressNotifier, Map<String, double>>(
+      DownloadProgressNotifier.new,
+    );
+
+class DownloadProgressNotifier extends Notifier<Map<String, double>> {
+  @override
+  Map<String, double> build() => const {};
+
+  bool isDownloading(String key) => state.containsKey(key);
+
+  void start(String key) {
+    state = {...state, key: 0.0};
+  }
+
+  void update(String key, double progress) {
+    state = {...state, key: progress};
+  }
+
+  void end(String key) {
+    if (!state.containsKey(key)) return;
+    final next = Map<String, double>.from(state)..remove(key);
+    state = next;
+  }
+}
 
 // ===========================================================================
 // 路径
@@ -306,6 +349,39 @@ class SortAscendingNotifier extends Notifier<bool> {
   void toggle() => value = !state;
 }
 
+/// 仅显示本设备下载的文件开关（默认关闭）
+///
+/// 浏览本机时匹配任意设备来源的下载记录；浏览远程设备时只匹配该设备。
+final onlyDownloadedProvider =
+    NotifierProvider<OnlyDownloadedNotifier, bool>(OnlyDownloadedNotifier.new);
+
+/// 下载状态变更版本号：删除/新增下载副本时自增，
+/// 让依赖 `DownloadService.hasDownloadRecord` 的过滤链重新计算（仅下载过滤）。
+final downloadedStampProvider =
+    NotifierProvider<DownloadStampNotifier, int>(DownloadStampNotifier.new);
+
+class DownloadStampNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// 下载状态变化时调用，触发"仅下载"过滤重新计算
+  void bump() => state++;
+}
+
+class OnlyDownloadedNotifier extends Notifier<bool> {
+  @override
+  bool build() =>
+      ref.read(sharedPrefsProvider).getBool(StorageKeys.filterOnlyDownloaded) ??
+      false;
+
+  set value(bool v) {
+    state = v;
+    ref.read(sharedPrefsProvider).setBool(StorageKeys.filterOnlyDownloaded, v);
+  }
+
+  void toggle() => value = !state;
+}
+
 // ===========================================================================
 // 布局模式
 // ===========================================================================
@@ -391,14 +467,28 @@ final fileListProvider = NotifierProvider<FileListNotifier, List<FileItem>>(
 );
 
 class FileListNotifier extends Notifier<List<FileItem>> {
+  /// 扫描代号：每次新扫描 +1，用于让过期的后台渐进回调不影响当前结果
+  int _scanSeq = 0;
+
+  /// 本 notifier 是否仍存活（dispose 后禁止再赋值 state / read）
+  ///
+  /// 设备切换会触发 provider 重建（新实例），旧实例上挂起的异步回调
+  /// （渐进扫描 onProgress、await 之后的赋值）若继续写 state 会出错。
+  bool _alive = true;
+
   @override
   List<FileItem> build() {
+    _alive = true;
+    ref.onDispose(() => _alive = false);
     // Watch 共享内容设置 — 设置变化时 Notifier 自动重建，触发重新扫描
-    ref.watch(sharedContentProvider);
+    final settings = ref.watch(sharedContentProvider);
     // Watch 选中设备 — 设备切换时自动重新加载文件列表
     final deviceIp = ref.watch(selectedDeviceIpProvider);
-    // 清除所有分类缓存，确保用新路径重新扫描
-    ref.read(localFileServiceProvider).clearAllCaches();
+    // 仅当共享设置变化（缓存签名不新鲜）时重置**内存**缓存，避免设备切换时误清本地缓存引发重扫。
+    // 注意：不能清空磁盘索引，否则每次启动都会把持久化缓存删掉、无法复用。
+    if (!ref.read(localFileServiceProvider).isCacheFresh(settings)) {
+      ref.read(localFileServiceProvider).resetMemoryCache();
+    }
     // 触发扫描（本机或远程）
     Future.microtask(() => scanFiles(deviceIp));
     return [];
@@ -411,25 +501,64 @@ class FileListNotifier extends Notifier<List<FileItem>> {
   /// 2. 后台拉取最新列表，与缓存做 uniqueKey 差集对比
   /// 3. 若有变化才更新 state；无变化则保持当前列表（避免无谓 rebuild）
   /// 4. 首次访问无缓存时，正常显示 loading 状态直到拉取完成
-  Future<void> scanFiles(String? deviceIp) async {
+  /// [force] true 时跳过缓存复用，强制重处理当前分类全部文件。
+  /// [checkReady] false 时始终重扫当前分类（但仍复用未变化文件），
+  /// 用于刷新按钮：既能发现新增/删除/变更，又不回退成全量重处理。
+  Future<void> scanFiles(
+    String? deviceIp, {
+    bool force = false,
+    bool checkReady = true,
+  }) async {
     final scanStateNotifier = ref.read(fileScanStateProvider.notifier);
 
     if (deviceIp == null) {
-      // 本机文件扫描
-      scanStateNotifier.set(FileScanState.scanning);
+      // 本机文件：优先复用缓存，只对当前分类做增量扫描（跳过未变化文件的
+      // 缩略图/解码/时长等重处理），避免每次切换/刷新全量扫描造成卡顿。
       final settings = ref.read(sharedContentProvider);
       final service = ref.read(localFileServiceProvider);
-      final files = await service.scanFiles(settings);
-      state = files;
-      scanStateNotifier.set(
-        files.isEmpty ? FileScanState.empty : FileScanState.done,
+      final category = _currentCategory();
+
+      if (!force &&
+          checkReady &&
+          (category == null
+              ? service.isCacheFresh(settings)
+              : service.isCategoryDataReady(category))) {
+        state = service.masterFileList;
+        scanStateNotifier.set(FileScanState.done);
+        return;
+      }
+
+      scanStateNotifier.set(FileScanState.scanning);
+      // 渐进扫描：先快速返回列表立即渲染，后台分批校验并增量刷新；
+      // 用 seq 防止过期的后台校验回调覆盖当前扫描结果
+      final seq = ++_scanSeq;
+      final files = await service.scanFilesProgressive(
+        settings,
+        category: category,
+        force: force,
+        onProgress: (_, __, partial) {
+          if (_alive && _scanSeq == seq) state = partial;
+        },
       );
+      if (_alive && _scanSeq == seq) {
+        state = files;
+        scanStateNotifier.set(
+          files.isEmpty ? FileScanState.empty : FileScanState.done,
+        );
+      }
       return;
     }
 
     // 远程设备：缓存优先策略
     final remoteService = ref.read(remoteFileServiceProvider);
+    // 进入远程分支即自增扫描代号，作废可能仍在本机分支进行中的渐进扫描：
+    // 重开应用后本机会先扫一次（若本机索引缺失则为耗时全量扫描，seq=N），
+    // 随后自动连上远程设备切到本分支。若不递增，残留本机扫描的 onProgress
+    // （_scanSeq 仍为 N）会持续把本机文件写回 state，覆盖远程列表，
+    // 表现为「远程列表一闪 → 变成本机列表」。点刷新走无缓存分支重拉才恢复。
+    final seq = ++_scanSeq;
     final cached = await remoteService.getCachedFileList(deviceIp);
+    if (!_alive || _scanSeq != seq) return;
 
     if (cached != null && cached.isNotEmpty) {
       // 立即显示缓存数据，无需 loading
@@ -444,6 +573,8 @@ class FileListNotifier extends Notifier<List<FileItem>> {
     // 无缓存：正常显示 loading，等待首次拉取
     scanStateNotifier.set(FileScanState.scanning);
     final files = await remoteService.fetchRemoteFileList(deviceIp);
+    // 拉取期间可能已切换设备/派生了新的扫描：过期结果不得覆盖当前上下文
+    if (!_alive || _scanSeq != seq) return;
     state = files;
     scanStateNotifier.set(
       files.isEmpty ? FileScanState.empty : FileScanState.done,
@@ -463,7 +594,7 @@ class FileListNotifier extends Notifier<List<FileItem>> {
 
       // 设备可能已切换，确认仍是同一设备
       final currentIp = ref.read(selectedDeviceIpProvider);
-      if (currentIp != deviceIp) return;
+      if (!_alive || currentIp != deviceIp) return;
 
       if (FileCacheService.instance.hasChanges(cachedFiles, latest)) {
         state = latest;
@@ -476,14 +607,17 @@ class FileListNotifier extends Notifier<List<FileItem>> {
   }
 
   /// 检查文件变更并按需刷新（选择分类时调用）
+  ///
+  /// 本机分支只对**当前选中分类**做增量扫描：分类数据尚未缓存就走一次
+  /// （cheap：未变化文件直接复用，跳过重处理）；已缓存则直接跳过，
+  /// 避免切换分类时全量扫描造成卡顿。删除的文件也会在此过程中被同步移除。
   Future<void> refreshIfNeeded() async {
     final deviceIp = ref.read(selectedDeviceIpProvider);
     if (deviceIp == null) {
-      // 本机文件：检查变更
-      final settings = ref.read(sharedContentProvider);
       final service = ref.read(localFileServiceProvider);
-      if (await service.hasChanges(settings)) {
-        await scanFiles(null);
+      final category = _currentCategory();
+      if (category != null && !service.isCategoryDataReady(category)) {
+        await scanFiles(null, force: false);
       }
     } else {
       // 远程文件：触发后台增量同步（不阻塞 UI）
@@ -498,20 +632,30 @@ class FileListNotifier extends Notifier<List<FileItem>> {
     }
   }
 
-  /// 强制重新扫描当前分类的文件（用户点击刷新按钮时调用）
+  /// 强制重新扫描当前分类（用户点击刷新按钮时调用）
   ///
-  /// 本机：强制执行一次完整扫描。
+  /// 本机：对当前分类强制重扫（重新做可用性/删除检测，未变化的文件仍复用缓存）。
   /// 远程：清除该设备缓存后强制重新拉取，确保显示最新文件列表。
   Future<void> forceRefresh() async {
     final deviceIp = ref.read(selectedDeviceIpProvider);
     if (deviceIp == null) {
-      // 本机：强制重新扫描全部共享文件夹
-      await scanFiles(null);
+      // 本机：始终重扫当前分类（checkReady:false 绕过"数据就绪即跳过"），
+      // 但复用未变化文件缓存，因此能发现新增/删除/变更，又不全量重处理。
+      await scanFiles(null, checkReady: false);
     } else {
       // 远程：清除该设备缓存后强制重新拉取（显示 loading）
       await FileCacheService.instance.clearCache(deviceIp);
       await scanFiles(deviceIp);
     }
+  }
+
+  /// 解析当前选中的分类（不存在时返回 null）
+  FileCategory? _currentCategory() {
+    final name = ref.read(fileCategoryProvider);
+    return ref
+        .read(allCategoriesProvider)
+        .where((c) => c.name == name)
+        .firstOrNull;
   }
 }
 
@@ -523,10 +667,26 @@ final _categoryFilteredFileListProvider = Provider<List<FileItem>>((ref) {
   final allFiles = ref.watch(fileListProvider);
   final categories = ref.watch(allCategoriesProvider);
   final selectedCategory = ref.watch(fileCategoryProvider);
+  final onlyDownloaded = ref.watch(onlyDownloadedProvider);
+  final currentDevice = ref.watch(effectiveSelectedDeviceProvider);
+  // 监听下载版本号：删除/新增下载文件时强制重新计算仅下载过滤
+  ref.watch(downloadedStampProvider);
+
+  // 开启"仅显示下载文件"时，先按下载记录过滤（本机=任意设备，远程=当前设备）
+  var result = allFiles;
+  if (onlyDownloaded) {
+    result = allFiles
+        .where((f) => DownloadService.instance.hasDownloadRecord(
+              deviceName: currentDevice,
+              fileName: f.name,
+              size: f.size,
+            ))
+        .toList();
+  }
 
   final category = categories.where((c) => c.name == selectedCategory).firstOrNull;
-  if (category == null) return allFiles;
-  return allFiles.where((f) => category.matches(f)).toList();
+  if (category == null) return result;
+  return result.where((f) => category.matches(f)).toList();
 });
 
 /// 根据分类筛选并排序后的文件列表（用于平铺展示）

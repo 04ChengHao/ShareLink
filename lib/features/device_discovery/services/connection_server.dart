@@ -16,19 +16,24 @@ class RemoteFileMeta {
   final int? size;
   final int? modifiedAt;
 
+  /// 媒体（视频/音频）时长（毫秒）
+  final int? duration;
+
   const RemoteFileMeta({
     required this.name,
     required this.path,
     this.size,
     this.modifiedAt,
+    this.duration,
   });
 
   Map<String, dynamic> toJson() => {
-    'name': name,
-    'path': path,
-    'size': size,
-    'modifiedAt': modifiedAt,
-  };
+        'name': name,
+        'path': path,
+        'size': size,
+        'modifiedAt': modifiedAt,
+        'duration': duration,
+      };
 }
 
 /// WebSocket 服务端（dart:io）

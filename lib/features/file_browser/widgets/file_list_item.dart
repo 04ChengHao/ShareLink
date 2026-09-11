@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/services/app_image_cache_manager.dart';
 import '../models/file_item.dart';
 import '../providers/file_browser_provider.dart';
+import '../services/local_file_service.dart';
 import '../services/remote_file_service.dart';
 
 /// 文件列表项（上方封面，下方文件名）
@@ -25,12 +27,18 @@ class FileListItem extends ConsumerStatefulWidget {
   /// 远程设备 IP（null 表示本机文件）
   final String? remoteDeviceIp;
 
+  /// 长按（手机）/ 右键（桌面）回调，用于弹出操作栏
+  ///
+  /// 传入卡片自身的 [BuildContext] 用于定位操作栏在卡片上方。
+  final void Function(BuildContext cardContext)? onShowActions;
+
   const FileListItem({
     super.key,
     required this.file,
     this.showFileName = true,
     this.onTap,
     this.remoteDeviceIp,
+    this.onShowActions,
   });
 
   @override
@@ -86,6 +94,8 @@ class _FileListItemState extends ConsumerState<FileListItem>
             onTapDown: (_) => _onTapDown(),
             onTapUp: (_) => _onTapUp(),
             onTapCancel: _onTapCancel,
+            onLongPress: () => widget.onShowActions?.call(context),
+            onSecondaryTap: () => widget.onShowActions?.call(context),
             child: ScaleTransition(
               scale: _scaleAnimation,
               child: _buildCover(colors),
@@ -149,11 +159,18 @@ class _FileListItemState extends ConsumerState<FileListItem>
 /// 透明网格背景占位（用于图片缩略图）
 ///
 /// 使用棋盘格让透明图片的透明区域可见，避免使用渐变色影响判断。
+/// [showIcon] 为 true 时居中显示类型图标（加载中/失败占位），
+/// 作为透明图片的网格背景时传 false，只保留棋盘格不显示图标。
 class _GridPlaceholder extends StatelessWidget {
   final IconData icon;
   final Color iconColor;
+  final bool showIcon;
 
-  const _GridPlaceholder({required this.icon, required this.iconColor});
+  const _GridPlaceholder({
+    required this.icon,
+    required this.iconColor,
+    this.showIcon = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -161,7 +178,8 @@ class _GridPlaceholder extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         CustomPaint(painter: _CheckerPainter()),
-        Center(child: Icon(icon, size: 36, color: iconColor)),
+        if (showIcon)
+          Center(child: Icon(icon, size: 36, color: iconColor)),
       ],
     );
   }
@@ -274,7 +292,11 @@ class _PlainCover extends StatelessWidget {
 ///
 /// 占位符使用透明网格背景（棋盘格），而非渐变色，
 /// 让用户能直观判断图片是否为透明图片。
-class _ImageCover extends StatefulWidget {
+///
+/// 注意：本机图片**首帧直接构建 Image**（不做"等一帧再加载"的延迟处理）。
+/// 图片缓存命中时同帧渲染，不出现「占位图 → 图片」的闪烁；
+/// 未命中时棋盘格背景自然透出，也不会有图标占位的突变。
+class _ImageCover extends StatelessWidget {
   final String imagePath;
   final Color typeColor;
   final String? remoteDeviceIp;
@@ -286,84 +308,61 @@ class _ImageCover extends StatefulWidget {
   });
 
   @override
-  State<_ImageCover> createState() => _ImageCoverState();
-}
-
-class _ImageCoverState extends State<_ImageCover> {
-  /// 是否开始加载图片（懒加载标记）
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    // 懒加载：等第一帧渲染完成（默认封面已显示）后再开始加载图片
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        setState(() => _loading = false);
-      }
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
-    // 加载中：显示网格占位
-    if (_loading) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: _GridPlaceholder(
-          icon: Icons.image,
-          iconColor: widget.typeColor,
-        ),
-      );
-    }
-
-    final isRemote = widget.remoteDeviceIp != null;
+    final isRemote = remoteDeviceIp != null;
 
     if (isRemote) {
       // 远程：使用 CachedNetworkImage 实现磁盘缓存
       final url = RemoteFileService.instance.buildFileUrl(
-        widget.remoteDeviceIp!,
-        widget.imagePath,
+        remoteDeviceIp!,
+        imagePath,
       );
       return ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: CachedNetworkImage(
-          imageUrl: url,
-          fit: BoxFit.cover,
-          memCacheWidth: 300,
-          placeholder: (_, _) => _GridPlaceholder(
-            icon: Icons.image,
-            iconColor: widget.typeColor,
-          ),
-          errorWidget: (_, _, _) => _GridPlaceholder(
-            icon: Icons.broken_image,
-            iconColor: widget.typeColor,
-          ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // 远程透明图片同样垫上棋盘格，透明区域可见（与本地一致）
+            _GridPlaceholder(
+              icon: Icons.image,
+              iconColor: typeColor,
+              showIcon: false,
+            ),
+            CachedNetworkImage(
+              imageUrl: url,
+              cacheManager: AppImageCacheManager.instance,
+              fit: BoxFit.cover,
+              memCacheWidth: 300,
+              fadeInDuration: Duration.zero,
+              fadeOutDuration: Duration.zero,
+              placeholder: (_, _) => const SizedBox.shrink(),
+              errorWidget: (_, _, _) => const SizedBox.shrink(),
+            ),
+          ],
         ),
       );
     }
 
-    // 本机：使用 Image.file（Flutter 内置缓存）
+    // 本机：使用 Image.file（Flutter 内置缓存，命中时同帧渲染不闪烁）
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // 网格背景作为占位
+          // 网格背景作为占位（本地缩略图保留棋盘格，透明区域可见）
           const _GridPlaceholder(
             icon: Icons.image,
             iconColor: Color(0xFF8E8E93),
+            showIcon: false,
           ),
           Image(
-            image: ResizeImage(FileImage(File(widget.imagePath)), width: 300),
+            image: ResizeImage(FileImage(File(imagePath)), width: 300),
             fit: BoxFit.cover,
+            gaplessPlayback: true,
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+              // frame == null：尚未解码完成，透出底部棋盘格（无图标突变）
               if (frame == null) return const SizedBox.shrink();
-              return AnimatedOpacity(
-                opacity: 1.0,
-                duration: const Duration(milliseconds: 200),
-                child: child,
-              );
+              return child;
             },
             errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
@@ -401,11 +400,46 @@ class _VideoThumbnailCoverState extends ConsumerState<_VideoThumbnailCover> {
   @override
   void initState() {
     super.initState();
-    // 懒加载：等第一帧渲染完成后再开始加载缩略图
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _startLoadingThumbnail();
-    });
+    // 本机模式：同步命中已生成的缩略图 → 首帧直接渲染，避免占位图闪烁
+    if (widget.remoteDeviceIp == null) {
+      final path = LocalFileService.instance.peekThumbnail(widget.videoPath);
+      if (path != null) {
+        _thumbnailUrl = path;
+        _loading = false;
+      }
+    }
+    // 未同步命中：等第一帧渲染完成后再异步加载/生成缩略图
+    if (_loading) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _startLoadingThumbnail();
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _VideoThumbnailCover oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 设备/路径变化：先尝试同步命中新路径的缩略图，未命中再异步加载
+    if (oldWidget.videoPath != widget.videoPath ||
+        oldWidget.remoteDeviceIp != widget.remoteDeviceIp) {
+      String? path;
+      if (widget.remoteDeviceIp == null) {
+        path = LocalFileService.instance.peekThumbnail(widget.videoPath);
+      }
+      if (path != null) {
+        _thumbnailUrl = path;
+        _loading = false;
+        _failed = false;
+      } else {
+        _thumbnailUrl = null;
+        _loading = true;
+        _failed = false;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _startLoadingThumbnail();
+        });
+      }
+    }
   }
 
   void _startLoadingThumbnail() {
@@ -464,18 +498,21 @@ class _VideoThumbnailCoverState extends ConsumerState<_VideoThumbnailCover> {
         child: Stack(
           fit: StackFit.expand,
           children: [
+            // 远程透明视频缩略图同样垫上棋盘格（与本地一致）
+            _GridPlaceholder(
+              icon: Icons.video_file,
+              iconColor: widget.typeColor,
+              showIcon: false,
+            ),
             CachedNetworkImage(
               imageUrl: _thumbnailUrl!,
+              cacheManager: AppImageCacheManager.instance,
               fit: BoxFit.cover,
               memCacheWidth: 300,
-              placeholder: (_, _) => _GridPlaceholder(
-                icon: Icons.video_file,
-                iconColor: widget.typeColor,
-              ),
-              errorWidget: (_, _, _) => _GridPlaceholder(
-                icon: Icons.video_file,
-                iconColor: widget.typeColor,
-              ),
+              fadeInDuration: Duration.zero,
+              fadeOutDuration: Duration.zero,
+              placeholder: (_, _) => const SizedBox.shrink(),
+              errorWidget: (_, _, _) => const SizedBox.shrink(),
             ),
             _buildPlayBadge(),
           ],
@@ -483,7 +520,7 @@ class _VideoThumbnailCoverState extends ConsumerState<_VideoThumbnailCover> {
       );
     }
 
-    // 本机：使用 Image.file
+    // 本机：使用 Image.file（本地视频缩略图保留棋盘格背景）
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Stack(
@@ -492,17 +529,16 @@ class _VideoThumbnailCoverState extends ConsumerState<_VideoThumbnailCover> {
           _GridPlaceholder(
             icon: Icons.video_file,
             iconColor: widget.typeColor,
+            showIcon: false,
           ),
           Image(
             image: ResizeImage(FileImage(File(_thumbnailUrl!)), width: 300),
             fit: BoxFit.cover,
+            gaplessPlayback: true,
             frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+              // 未解码完成时透出棋盘格，解码后同帧渲染（无闪烁）
               if (frame == null) return const SizedBox.shrink();
-              return AnimatedOpacity(
-                opacity: 1.0,
-                duration: const Duration(milliseconds: 200),
-                child: child,
-              );
+              return child;
             },
             errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),

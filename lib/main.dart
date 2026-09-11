@@ -11,8 +11,11 @@ import 'package:window_manager/window_manager.dart'
     if (dart.library.html) 'shared/widgets/window_manager_stub.dart';
 
 import 'app.dart';
+import 'core/services/app_cache_directory.dart';
 import 'core/services/storage_service.dart';
 import 'core/services/tray_service.dart';
+import 'features/file_browser/services/download_service.dart';
+import 'features/file_browser/services/media_duration_service.dart';
 import 'features/file_browser/services/remote_file_service.dart';
 
 @pragma('vm:entry-point')
@@ -30,12 +33,19 @@ void main() async {
   // 初始化本地存储
   final prefs = await SharedPreferences.getInstance();
 
+  // 初始化下载 / 时长服务（全局直接访问单例，需在启动时注入 SharedPreferences）
+  DownloadService.instance.init(prefs);
+  MediaDurationService.instance.init(prefs);
+
   // 初始化媒体播放器（media_kit，全平台统一支持）
   MediaKit.ensureInitialized();
 
   // 清空远程文件临时缓存目录（应用启动时）
   RemoteFileService.instance.startCleanupTimer();
-  await RemoteFileService.instance.clearAllTempFiles();
+  await RemoteFileService.instance.cleanupStartupCache();
+
+  // 清理旧版本散落在系统临时目录的遗留缓存
+  await AppCacheDirectory.cleanupLegacyLocations();
 
   // 移动端：初始状态栏样式
   if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
@@ -74,15 +84,12 @@ void main() async {
     };
     trayService.onHideWindow = () async {
       // 复用窗口关闭按钮的隐藏逻辑：windowManager.close() 会触发
-      // 日志
-      debugPrint('[TrayService] 隐藏窗口');
+      // app.dart 的 onWindowClose → hide()，可靠地隐藏窗口。
       await windowManager.close();
     };
     trayService.onExitApp = () async {
       // 先销毁窗口让引擎/原生窗口干净释放，再立即退出进程。
       // 直接 exit() 会让 Windows 引擎清理阻塞，导致退出卡顿数秒。
-      // 日志
-      debugPrint('[TrayService] 退出应用');
       await windowManager.destroy();
       exit(0);
     };

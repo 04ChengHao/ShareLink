@@ -169,6 +169,29 @@ class DiscoveryService {
     } catch (e) {
       debugPrint('[Discovery] beacon 发送失败 -> $broadcastAddr: $e');
     }
+
+    // 广播之外，再向所有在线的已发现设备单播一次 beacon。
+    // 弥补 AP/Client（热点）拓扑下的广播不对称：本机作为 AP 时广播无法到达
+    // Client，若只在发现瞬间单播一次，对端在 ~10s 后会被 sweep 判为离线
+    // （即便 WebSocket 连接仍存活）。周期单播让对端持续收到 beacon，保持在线。
+    for (final device in _devices.values.toList()) {
+      _sendUnicastBeacon(InternetAddress(device.ip));
+    }
+  }
+  ///
+  /// 用于修复 AP/Client（热点）拓扑下的广播不对称：当本机作为 Client 时，
+  /// AP 的广播 beacon 可能无法到达本机，但既然本机能收到对端的广播，
+  /// 说明对端可达。通过单播回应，让对端获得本机（发送方，即 datagram 源）
+  /// 的 IP 与名称，从而能反向发现并连接本机。
+  void _sendUnicastBeacon(InternetAddress target) {
+    if (_socket == null) return;
+    final beacon = _beaconBuilder();
+    final data = utf8.encode(jsonEncode(beacon));
+    try {
+      _socket!.send(data, target, defaultPort);
+    } catch (e) {
+      debugPrint('[Discovery] 单播回应失败 -> ${target.address}: $e');
+    }
   }
 
   /// 接收 UDP 数据
@@ -209,6 +232,14 @@ class DiscoveryService {
 
         _devices[id] = device;
         _notify();
+
+        // 向对端单播回传自身 beacon，修复 AP/Client（热点）拓扑下广播不对称：
+        // 本机能收到对端的广播，说明对端可达；通过单播回应让对端获得本机的
+        // IP 与名称，从而能反向发现并连接本机。只在设备首次出现/重新上线时回应，
+        // 避免每次心跳都互相回包造成日志与流量噪音。
+        if (isNewDevice || isReappearance) {
+          _sendUnicastBeacon(datagram.address);
+        }
 
         // 新设备首次出现时触发搜索回调
         if (isNewDevice) {

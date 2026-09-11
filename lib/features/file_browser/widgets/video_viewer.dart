@@ -42,6 +42,12 @@ class VideoViewer extends StatefulWidget {
   final VoidCallback? onToggleFullscreen;
   final VoidCallback? onBack;
 
+  /// 缓存里已有的时长（毫秒），用于加载前直接显示总时长
+  final int? knownDurationMs;
+
+  /// 当播放器确定媒体真实时长时回调（用于把时长回写入缓存）
+  final void Function(Duration duration)? onDurationKnown;
+
   const VideoViewer({
     super.key,
     required this.mediaUri,
@@ -49,6 +55,8 @@ class VideoViewer extends StatefulWidget {
     this.isFullscreen = false,
     this.onToggleFullscreen,
     this.onBack,
+    this.onDurationKnown,
+    this.knownDurationMs,
   });
 
   @override
@@ -68,6 +76,12 @@ class _VideoViewerState extends State<VideoViewer> {
   // 缓冲状态：初始加载时即为 true，直到有足够缓冲
   bool _buffering = true;
   Duration _buffer = Duration.zero;
+  // 已知时长：优先取缓存（加载前直接显示），播放器加载后如有变化再更新
+  Duration _knownDuration = Duration.zero;
+  Duration get _resolvedDuration =>
+      _player.state.duration.inMilliseconds > 0
+          ? _player.state.duration
+          : _knownDuration;
 
   // 手势状态（进度条拖动）
   // 使用绝对位置计算，避免 delta 累积导致的跳动问题
@@ -123,6 +137,9 @@ class _VideoViewerState extends State<VideoViewer> {
     super.initState();
     _player = Player();
     _controller = VideoController(_player);
+    _knownDuration = widget.knownDurationMs != null
+        ? Duration(milliseconds: widget.knownDurationMs!)
+        : Duration.zero;
     _initPlayer();
     _startHideTimer();
     // 保存系统亮度，用于退出时恢复
@@ -173,8 +190,15 @@ class _VideoViewerState extends State<VideoViewer> {
     _subscriptions.add(_player.stream.position.listen((_) {
       if (mounted && !_isDraggingProgress) setState(() {});
     }));
-    _subscriptions.add(_player.stream.duration.listen((_) {
+    _subscriptions.add(_player.stream.duration.listen((d) {
       if (mounted) setState(() {});
+      if (d > Duration.zero) widget.onDurationKnown?.call(d);
+      // 播放器加载出真实时长：与缓存/已知不同才更新并写回，相同则不动
+      final real = _player.state.duration;
+      if (real.inMilliseconds > 0 && real != _knownDuration) {
+        _knownDuration = real;
+        widget.onDurationKnown?.call(d);
+      }
     }));
     _subscriptions.add(_player.stream.completed.listen((_) {
       if (mounted) setState(() {});
@@ -796,7 +820,7 @@ class _VideoViewerState extends State<VideoViewer> {
     );
   }
   List<Widget> _buildControls(AppColorScheme colors) {
-    final duration = _player.state.duration;
+    final duration = _resolvedDuration;
     final position = _player.state.position;
     final progress = _isDraggingProgress
         ? _seekPreviewProgress

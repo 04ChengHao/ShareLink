@@ -14,6 +14,7 @@ import 'core/utils/platform_utils.dart';
 import 'features/device_discovery/providers/device_provider.dart';
 import 'features/device_discovery/views/device_discovery_view.dart';
 import 'features/file_browser/views/file_browser_view.dart';
+import 'features/settings/providers/settings_provider.dart';
 import 'features/settings/views/settings_view.dart';
 import 'shared/themes/app_theme.dart';
 import 'shared/widgets/glass_nav_bar.dart';
@@ -87,11 +88,20 @@ class _MobileShellState extends ConsumerState<MobileShell>
   Widget build(BuildContext context) {
     return Scaffold(
       extendBody: true,
-      body: _pages[_currentIndex],
+      // IndexedStack 保持所有页面存活：切换 tab 不销毁/重建页面，
+      // 文件列表滚动位置与封面缩略图缓存得以保留，避免占位图闪烁
+      body: IndexedStack(
+        index: _currentIndex,
+        children: _pages,
+      ),
       bottomNavigationBar: GlassNavBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
           setState(() => _currentIndex = index);
+          // 进入设置页时重新统计缓存大小（IndexedStack 保活，initState 不重复执行）
+          if (index == 2) {
+            ref.read(cacheSizeProvider.notifier).refresh();
+          }
         },
         destinations: const [
           GlassNavDestination(
@@ -207,7 +217,12 @@ class _DesktopShellState extends ConsumerState<DesktopShell>
             child: ClipRect(
               child: Stack(
                 children: [
-                  pages[_currentIndex],
+                  // IndexedStack 保持所有页面存活：切换 tab 不销毁/重建页面，
+                  // 避免文件列表缩略图重新加载造成占位图闪烁
+                  IndexedStack(
+                    index: _currentIndex,
+                    children: pages,
+                  ),
                   const Positioned(
                     top: 0,
                     left: 0,
@@ -390,8 +405,15 @@ class _DesktopShellState extends ConsumerState<DesktopShell>
                                   }
                                 },
                                 child: GestureDetector(
-                                  onTap: () =>
-                                      setState(() => _currentIndex = index),
+                                  onTap: () {
+                                    setState(() => _currentIndex = index);
+                                    // 进入设置页时重新统计缓存大小（IndexedStack 保活）
+                                    if (index == 2) {
+                                      ref
+                                          .read(cacheSizeProvider.notifier)
+                                          .refresh();
+                                    }
+                                  },
                                   behavior: HitTestBehavior.opaque,
                                   child: SizedBox(
                                     width: _itemSize,

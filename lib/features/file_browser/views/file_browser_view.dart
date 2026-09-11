@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,7 +8,9 @@ import '../../../core/constants/app_colors.dart' show AppColorScheme, AppColors;
 import '../../../core/constants/app_strings.dart';
 import '../../../core/utils/device_icon_utils.dart';
 import '../../../core/utils/platform_utils.dart';
+import '../../../shared/widgets/app_toast.dart';
 import '../../../shared/widgets/glass_dropdown.dart';
+import '../../../shared/widgets/liquid_glass.dart';
 import '../../../shared/widgets/neuomorphic_style.dart';
 import '../../../shared/widgets/segmented_tab.dart';
 import '../../device_discovery/models/device.dart';
@@ -14,6 +19,7 @@ import '../models/file_item.dart';
 import '../providers/file_browser_provider.dart';
 import '../widgets/add_category_drawer.dart';
 import '../widgets/add_category_sheet.dart';
+import '../widgets/file_details_sheet.dart';
 import '../widgets/file_list_item.dart';
 import 'file_viewer_page.dart';
 
@@ -42,6 +48,22 @@ void _openFile(BuildContext context, WidgetRef ref, FileItem file) {
   );
 }
 
+/// 文件卡片长按/右键：直接拉起详情弹窗（本机/远程皆如此）
+///
+/// 下载、打开、预览、删除等操作均已内置在详情弹窗中，无需再走选项弹窗。
+void _handleFileActions(BuildContext cardContext, WidgetRef ref, FileItem file) {
+  final deviceIp = ref.read(selectedDeviceIpProvider);
+  final deviceName = ref.read(effectiveSelectedDeviceProvider) ?? '本机';
+  final categoryName = ref.read(fileCategoryProvider);
+  openFileDetails(
+    cardContext,
+    file: file,
+    deviceIp: deviceIp,
+    deviceName: deviceName,
+    categoryName: categoryName,
+  );
+}
+
 /// 加载中状态组件
 class _LoadingState extends StatelessWidget {
   const _LoadingState();
@@ -67,6 +89,71 @@ class _LoadingState extends StatelessWidget {
             style: TextStyle(fontSize: 14, color: colors.textSecondary),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 顶部扫描进度提示条（列表已有数据时的刷新/渐进扫描状态显示）
+///
+/// 液态玻璃胶囊样式（与 tabbar / 返回顶部按钮设计语言一致），
+/// 悬浮于列表顶部，不遮挡内容、不拦截点击。
+class _ScanningIndicator extends StatelessWidget {
+  const _ScanningIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = AppColorScheme.of(context);
+    final isDark = colors.isDark;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: isDark
+                ? Colors.black.withValues(alpha: 0.45)
+                : Colors.white.withValues(alpha: 0.78),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isDark
+                  ? Colors.white.withValues(alpha: 0.16)
+                  : Colors.white.withValues(alpha: 0.9),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.1),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation(theme.colorScheme.primary),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                AppStrings.scanningFiles,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: colors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -135,6 +222,105 @@ Widget _actionTooltip(String message, Widget child) {
   );
 }
 
+/// 液态玻璃图标动作按钮（刷新 / 添加分类等）
+///
+/// 与 tabbar 激活块 / 液态玻璃胶囊一致：白色发光 + 半透明白渐变 + 白色描边，
+/// 深色模式下用白图标/白字，浅色模式用主色。带 Material+InkWell 水波纹反馈。
+/// 内边距统一放在玻璃内部并居中，保证图标/文字与边框留白一致。
+Widget _glassActionButton({
+  required BuildContext context,
+  required IconData icon,
+  required VoidCallback onPressed,
+  String? tooltip,
+  String? label,
+  double radius = 12,
+  Color? iconColor,
+  bool fillWidth = false,
+}) {
+  final colors = AppColorScheme.of(context);
+  final isDark = colors.isDark;
+  final color = iconColor ?? (isDark ? Colors.white : colors.iconActive);
+  final hasLabel = label != null;
+
+  final button = Container(
+    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(radius),
+      boxShadow: [
+        // 白色发光：与 tabbar 外框一致，保证统一发光强度
+        BoxShadow(
+          color: Colors.white.withValues(alpha: isDark ? 0.22 : 0.3),
+          blurRadius: 20,
+          offset: const Offset(0, 10),
+        ),
+        // 常规投影：让按钮从背景脱离
+        BoxShadow(
+          color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.1),
+          blurRadius: 16,
+          offset: const Offset(0, 6),
+        ),
+      ],
+    ),
+    child: Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(radius),
+        child: Ink(
+          // 有文字时给玻璃内部左右留白，与单图标按钮的居中内边距一致
+          padding: EdgeInsets.symmetric(horizontal: hasLabel ? 12 : 0),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: isDark
+                  ? const [
+                      Color(0x45383842),
+                      Color(0x3824242A),
+                    ]
+                  : [
+                      Colors.white.withValues(alpha: 0.9),
+                      Colors.white.withValues(alpha: 0.6),
+                    ],
+            ),
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(
+              color: isDark
+                  ? Colors.white.withValues(alpha: 0.28)
+                  : Colors.white.withValues(alpha: 0.8),
+            ),
+          ),
+          child: SizedBox(
+            width: fillWidth ? double.infinity : null,
+            height: 44,
+            child: Center(
+              child: hasLabel
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(icon, size: 18, color: color),
+                        const SizedBox(width: 6),
+                        Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: color,
+                          ),
+                        ),
+                      ],
+                    )
+                  : Icon(icon, size: 20, color: color),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  return tooltip == null ? button : _actionTooltip(tooltip, button);
+}
+
 // ---------------------------------------------------------------------------
 // 筛选条件栏（全端共用）
 // ---------------------------------------------------------------------------
@@ -151,6 +337,9 @@ class _FilterBar extends ConsumerWidget {
     final timelineGroup = ref.watch(timelineGroupProvider);
     final extensionGroup = ref.watch(extensionGroupProvider);
     final sortAscending = ref.watch(sortAscendingProvider);
+    final onlyDownloaded = ref.watch(onlyDownloadedProvider);
+    // 激活按钮内部元素颜色：与 tabbar 激活块呼应（深色用白，浅色用主色）
+    final activeColor = colors.isDark ? Colors.white : colors.iconActive;
 
     return Row(
       children: [
@@ -185,22 +374,18 @@ class _FilterBar extends ConsumerWidget {
           ),
         ),
         const SizedBox(width: 8),
-        // 右侧：排序方向切换按钮
+        // 右侧：排序方向切换按钮（液态玻璃 + 激活发光）
         GestureDetector(
           onTap: () => ref.read(sortAscendingProvider.notifier).toggle(),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: sortAscending
-                  ? colors.primaryWithAlpha(0.15)
-                  : colors.inputBg,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: sortAscending
-                    ? colors.primaryWithAlpha(0.5)
-                    : colors.inputBorder,
-              ),
-            ),
+            decoration: sortAscending
+                ? GlassCapsuleDecoration.build(colors, 10, strong: false)
+                : BoxDecoration(
+                    color: colors.glassBg,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: colors.glassBorder),
+                  ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -210,7 +395,7 @@ class _FilterBar extends ConsumerWidget {
                       : Icons.arrow_downward,
                   size: 18,
                   color: sortAscending
-                      ? colors.iconActive
+                      ? activeColor
                       : colors.textSecondary,
                 ),
                 const SizedBox(width: 4),
@@ -220,11 +405,33 @@ class _FilterBar extends ConsumerWidget {
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                     color: sortAscending
-                        ? colors.iconActive
+                        ? activeColor
                         : colors.textSecondary,
                   ),
                 ),
               ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        // 右侧：仅显示本设备下载的文件开关（液态玻璃 + 激活发光）
+        GestureDetector(
+          onTap: () => ref.read(onlyDownloadedProvider.notifier).toggle(),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: onlyDownloaded
+                ? GlassCapsuleDecoration.build(colors, 10, strong: false)
+                : BoxDecoration(
+                    color: colors.glassBg,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: colors.glassBorder),
+                  ),
+            child: Icon(
+              Icons.download_outlined,
+              size: 18,
+              color: onlyDownloaded
+                  ? activeColor
+                  : colors.textSecondary,
             ),
           ),
         ),
@@ -294,6 +501,7 @@ class _DesktopFileBrowser extends ConsumerWidget {
                 },
                 onRemoveCategory: (name) {
                   ref.read(customCategoriesProvider.notifier).removeCategory(name);
+                  showAppToast(context, '分类「$name」已删除', type: ToastType.success);
                 },
               ),
               Expanded(
@@ -329,6 +537,8 @@ class _DesktopFileBrowser extends ConsumerWidget {
                           scanState: scanState,
                           remoteDeviceIp: remoteDeviceIp,
                           onFileTap: (file) => _openFile(context, ref, file),
+                          onShowActions: (ctx, file) =>
+                              _handleFileActions(ctx, ref, file),
                         ),
                       ),
                     ],
@@ -364,6 +574,12 @@ class _FileContentArea extends StatefulWidget {
   final void Function(FileItem)? onFileTap;
   final String? remoteDeviceIp;
 
+  /// 长按/右键显示操作栏（下载、详情）
+  final void Function(BuildContext context, FileItem file) onShowActions;
+
+  /// 底部预留（手机端悬浮 tabbar 高度），加到滚动内容底部，滑到底部不被遮挡
+  final double bottomPadding;
+
   const _FileContentArea({
     required this.timelineGroup,
     required this.extensionGroup,
@@ -374,8 +590,10 @@ class _FileContentArea extends StatefulWidget {
     required this.extensionGroups,
     required this.nestedGroups,
     required this.scanState,
+    required this.onShowActions,
     this.onFileTap,
     this.remoteDeviceIp,
+    this.bottomPadding = 0,
   });
 
   @override
@@ -450,10 +668,14 @@ class _FileContentAreaState extends State<_FileContentArea> {
   @override
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
+    final isDark = colors.isDark;
 
-    // 加载中状态（文件扫描中）
-    if (widget.scanState == FileScanState.idle ||
-        widget.scanState == FileScanState.scanning) {
+    // 加载中状态：仅在「还没有任何数据」时才显示全屏 loading。
+    // 渐进扫描期间 files 已有部分数据（onProgress 持续更新 state），
+    // 直接渲染列表实现"一边扫描一边渲染"，避免首次扫描长时间白屏。
+    if (widget.files.isEmpty &&
+        (widget.scanState == FileScanState.idle ||
+            widget.scanState == FileScanState.scanning)) {
       return const _LoadingState();
     }
 
@@ -474,10 +696,23 @@ class _FileContentAreaState extends State<_FileContentArea> {
     return Stack(
       children: [
         _buildContent(),
+        // 扫描进行中且列表已有数据（刷新/增量扫描）：顶部玻璃进度提示条，
+        // 让用户明确感知 loading 状态，同时不遮挡列表内容
+        if (widget.scanState == FileScanState.scanning &&
+            widget.files.isNotEmpty)
+          Positioned(
+            top: 8,
+            left: 0,
+            right: 0,
+            child: IgnorePointer(
+              child: Center(child: _ScanningIndicator()),
+            ),
+          ),
         // 返回顶部悬浮按钮
         if (_showBackToTop)
           Positioned(
-            bottom: 16,
+            // 紧贴悬浮 tabbar 上方，间隔约一个按钮可见度的距离，避免被遮挡也避免过高
+            bottom: MediaQuery.of(context).padding.bottom + 20,
             right: 16,
             child: GestureDetector(
               onTap: _scrollToTop,
@@ -498,17 +733,56 @@ class _FileContentAreaState extends State<_FileContentArea> {
                   width: 48,
                   height: 48,
                   decoration: BoxDecoration(
-                    color: colors.cardBg,
                     shape: BoxShape.circle,
-                    boxShadow: NeuomorphicStyle.adaptive(
-                      Theme.of(context).brightness,
-                      blur: 16,
-                    ),
+                    // 外发光：绘制在圆形容器上，向周围散发，不被内侧裁剪
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.white.withValues(alpha: 0.55),
+                        blurRadius: 18,
+                        spreadRadius: 1,
+                      ),
+                      BoxShadow(
+                        color: Colors.black.withValues(
+                          alpha: isDark ? 0.3 : 0.12,
+                        ),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
                   ),
-                  child: Icon(
-                    Icons.arrow_upward,
-                    color: colors.iconPrimary,
-                    size: 24,
+                  child: ClipOval(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          // 液态玻璃，与底部 tabbar 设计语言一致
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: isDark
+                                ? const [
+                                    Color(0xB8383842),
+                                    Color(0x9924242A),
+                                  ]
+                                : [
+                                    Colors.white.withValues(alpha: 0.92),
+                                    Colors.white.withValues(alpha: 0.7),
+                                  ],
+                          ),
+                          border: Border.all(
+                            color: isDark
+                                ? Colors.white.withValues(alpha: 0.18)
+                                : Colors.white.withValues(alpha: 0.8),
+                            width: 1,
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.arrow_upward,
+                          color: colors.iconPrimary,
+                          size: 24,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -527,7 +801,9 @@ class _FileContentAreaState extends State<_FileContentArea> {
         crossAxisCount: widget.crossAxisCount,
         onFileTap: widget.onFileTap,
         remoteDeviceIp: widget.remoteDeviceIp,
+        onShowActions: widget.onShowActions,
         scrollController: _scrollController,
+        bottomPadding: widget.bottomPadding,
       );
     }
     // 仅时间轴分组
@@ -538,7 +814,9 @@ class _FileContentAreaState extends State<_FileContentArea> {
         crossAxisCount: widget.crossAxisCount,
         onFileTap: widget.onFileTap,
         remoteDeviceIp: widget.remoteDeviceIp,
+        onShowActions: widget.onShowActions,
         scrollController: _scrollController,
+        bottomPadding: widget.bottomPadding,
       );
     }
     // 仅后缀分组
@@ -549,31 +827,56 @@ class _FileContentAreaState extends State<_FileContentArea> {
         crossAxisCount: widget.crossAxisCount,
         onFileTap: widget.onFileTap,
         remoteDeviceIp: widget.remoteDeviceIp,
+        onShowActions: widget.onShowActions,
         scrollController: _scrollController,
+        bottomPadding: widget.bottomPadding,
       );
     }
     // 平铺模式
     return LayoutBuilder(
       builder: (context, constraints) {
         final count = _calcCrossAxisCount(constraints.maxWidth);
-        return GridView.builder(
-          controller: _scrollController,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: count,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
-            childAspectRatio: 0.85,
-          ),
-          itemCount: widget.files.length,
-          itemBuilder: (context, index) => FileListItem(
-            file: widget.files[index],
-            showFileName: widget.showFileName,
-            remoteDeviceIp: widget.remoteDeviceIp,
-            onTap: widget.onFileTap != null
-                ? () => widget.onFileTap!(widget.files[index])
-                : null,
-          ),
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GridView.builder(
+                controller: _scrollController,
+                padding: EdgeInsets.only(
+                  left: 12,
+                  right: 12,
+                  bottom: 16 + widget.bottomPadding,
+                ),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: count,
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                  childAspectRatio: 0.85,
+                ),
+                itemCount: widget.files.length,
+                itemBuilder: (context, index) => FileListItem(
+                  key: ValueKey('${widget.remoteDeviceIp}|${widget.files[index].path}'),
+                  file: widget.files[index],
+                  showFileName: widget.showFileName,
+                  remoteDeviceIp: widget.remoteDeviceIp,
+                  onTap: widget.onFileTap != null
+                      ? () => widget.onFileTap!(widget.files[index])
+                      : null,
+                  onShowActions: (ctx) =>
+                      widget.onShowActions(ctx, widget.files[index]),
+                ),
+              ),
+            ),
+            // 右侧悬浮液态玻璃进度条（覆盖在列表之上，不挤压列表空间）
+            Positioned(
+              right: 4,
+              top: 0,
+              bottom: 0,
+              width: 36,
+              child: _FloatingScrollbar(
+                scrollController: _scrollController,
+              ),
+            ),
+          ],
         );
       },
     );
@@ -709,73 +1012,21 @@ class _DesktopSidebar extends StatelessWidget {
             const SizedBox(height: 8),
             Row(
               children: [
-                Tooltip(
-                  message: AppStrings.refresh,
-                  preferBelow: false,
-                  verticalOffset: 20,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.85),
-                    borderRadius: BorderRadius.circular(6),
+                _glassActionButton(
+                    context: context,
+                    icon: Icons.refresh,
+                    onPressed: onRefresh,
+                    tooltip: AppStrings.refresh,
                   ),
-                  textStyle: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  child: SizedBox(
-                    width: 44,
-                    child: OutlinedButton(
-                      onPressed: onRefresh,
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: colors.textPrimary,
-                        side: BorderSide(color: colors.inputBorder),
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                      child: const Icon(Icons.refresh, size: 18),
-                    ),
-                  ),
-                ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Tooltip(
-                    message: AppStrings.addCategory,
-                    preferBelow: false,
-                    verticalOffset: 20,
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.85),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    textStyle: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: onAddCategory,
-                        icon: const Icon(Icons.add, size: 18),
-                        label: Text(
-                          // 三个按钮同时出现时简化为"分类"，避免拥挤
-                          isCustomSelected ? '分类' : AppStrings.addCategory,
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: colors.textPrimary,
-                          side: BorderSide(color: colors.inputBorder),
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 10,
-                            horizontal: 8,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
-                      ),
-                    ),
+                  child: _glassActionButton(
+                    context: context,
+                    icon: Icons.add,
+                    onPressed: onAddCategory,
+                    label: isCustomSelected ? '分类' : AppStrings.addCategory,
+                    tooltip: AppStrings.addCategory,
+                    fillWidth: true,
                   ),
                 ),
                 if (isCustomSelected) ...[
@@ -968,7 +1219,7 @@ class _MobileFileBrowser extends ConsumerWidget {
               height: 40,
               child: SegmentedTab<CategoryDisplayMode>(
                 items: const [
-                  SegmentedTabItem(value: CategoryDisplayMode.dropdown, icon: Icons.arrow_drop_down_circle),
+                  SegmentedTabItem(value: CategoryDisplayMode.dropdown, icon: Icons.keyboard_arrow_down),
                   SegmentedTabItem(value: CategoryDisplayMode.list, icon: Icons.view_list),
                 ],
                 selectedValues: {displayMode},
@@ -983,6 +1234,8 @@ class _MobileFileBrowser extends ConsumerWidget {
         ),
       ),
       body: SafeArea(
+        top: true,
+        bottom: false,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1000,6 +1253,7 @@ class _MobileFileBrowser extends ConsumerWidget {
                 },
                 onRemoveCategory: (name) {
                   ref.read(customCategoriesProvider.notifier).removeCategory(name);
+                  showAppToast(context, '分类「$name」已删除', type: ToastType.success);
                 },
               )
             else
@@ -1015,6 +1269,7 @@ class _MobileFileBrowser extends ConsumerWidget {
                 },
                 onRemoveCategory: (name) {
                   ref.read(customCategoriesProvider.notifier).removeCategory(name);
+                  showAppToast(context, '分类「$name」已删除', type: ToastType.success);
                 },
               ),
             // 筛选条件栏
@@ -1022,7 +1277,8 @@ class _MobileFileBrowser extends ConsumerWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: const _FilterBar(),
             ),
-            // 文件内容区
+            // 文件内容区（列表伸展到屏幕底部；底部预留交给滚动内容 padding，
+            // 保证滑到底部时最后一行不被悬浮 tabbar 遮挡）
             Expanded(
               child: _FileContentArea(
                 timelineGroup: timelineGroup,
@@ -1036,6 +1292,9 @@ class _MobileFileBrowser extends ConsumerWidget {
                 scanState: scanState,
                 remoteDeviceIp: remoteDeviceIp,
                 onFileTap: (file) => _openFile(context, ref, file),
+                onShowActions: (ctx, file) =>
+                    _handleFileActions(ctx, ref, file),
+                bottomPadding: MediaQuery.of(context).padding.bottom,
               ),
             ),
           ],
@@ -1099,38 +1358,18 @@ class _MobileDropdownCategoryBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _actionTooltip(
-            AppStrings.refresh,
-            OutlinedButton(
-              onPressed: onRefresh,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: colors.iconActive,
-                side: BorderSide(color: colors.inputBorder),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                minimumSize: const Size(44, 44),
-              ),
-              child: const Icon(Icons.refresh, size: 20),
-            ),
+          _glassActionButton(
+            context: context,
+            icon: Icons.refresh,
+            onPressed: onRefresh,
+            tooltip: AppStrings.refresh,
           ),
           const SizedBox(width: 8),
-          _actionTooltip(
-            AppStrings.addCategory,
-            OutlinedButton(
-              onPressed: onAddCategory,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: colors.iconActive,
-                side: BorderSide(color: colors.inputBorder),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                minimumSize: const Size(44, 44),
-              ),
-              child: const Icon(Icons.add, size: 20),
-            ),
+          _glassActionButton(
+            context: context,
+            icon: Icons.add,
+            onPressed: onAddCategory,
+            tooltip: AppStrings.addCategory,
           ),
           if (isCustomSelected) ...[
             const SizedBox(width: 8),
@@ -1177,7 +1416,6 @@ class _MobileListCategoryBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = AppColorScheme.of(context);
     final isCustomSelected = !defaultCategories.any((c) => c.name == selectedCategory);
 
     return Column(
@@ -1204,43 +1442,22 @@ class _MobileListCategoryBar extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              _actionTooltip(
-                AppStrings.refresh,
-                OutlinedButton(
-                  onPressed: onRefresh,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: colors.iconActive,
-                    side: BorderSide(color: colors.inputBorder),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Icon(Icons.refresh, size: 18),
-                ),
+              _glassActionButton(
+                context: context,
+                icon: Icons.refresh,
+                onPressed: onRefresh,
+                tooltip: AppStrings.refresh,
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: _actionTooltip(
-                    AppStrings.addCategory,
-                    OutlinedButton.icon(
-                      onPressed: onAddCategory,
-                      icon: Icon(Icons.add, size: 18, color: colors.iconActive),
-                      label: Text(
-                        AppStrings.addCategory,
-                        style: TextStyle(fontSize: 13, color: colors.iconActive),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: colors.iconActive,
-                        side: BorderSide(color: colors.inputBorder),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                    ),
+                  child: _glassActionButton(
+                    context: context,
+                    icon: Icons.add,
+                    onPressed: onAddCategory,
+                    label: AppStrings.addCategory,
+                    tooltip: AppStrings.addCategory,
                   ),
                 ),
               ),
@@ -1283,15 +1500,21 @@ class _TimelineView extends StatefulWidget {
   final int crossAxisCount;
   final void Function(FileItem)? onFileTap;
   final String? remoteDeviceIp;
+  final void Function(BuildContext context, FileItem file) onShowActions;
   final ScrollController scrollController;
+
+  /// 底部预留（手机端悬浮 tabbar 高度），加到滚动内容底部
+  final double bottomPadding;
 
   const _TimelineView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
+    required this.onShowActions,
     this.onFileTap,
     this.remoteDeviceIp,
     required this.scrollController,
+    this.bottomPadding = 0,
   });
 
   @override
@@ -1313,16 +1536,14 @@ class _TimelineViewState extends State<_TimelineView> {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: colors.primaryWithAlpha(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
+                decoration: GlassCapsuleDecoration.build(colors, 8),
                 child: Text(
                   group.label,
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: colors.iconActive,
+                    // 深色模式：液态玻璃胶囊上用白字；浅色模式保持主色
+                    color: colors.isDark ? Colors.white : colors.iconActive,
                   ),
                 ),
               ),
@@ -1341,36 +1562,39 @@ class _TimelineViewState extends State<_TimelineView> {
       slivers.add(SliverPadding(
         padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
         sliver: SliverGrid(
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: widget.crossAxisCount,
+          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 150,
             crossAxisSpacing: 8,
             mainAxisSpacing: 2,
             childAspectRatio: 0.85,
           ),
           delegate: SliverChildBuilderDelegate(
             (context, index) => FileListItem(
+              key: ValueKey('${widget.remoteDeviceIp}|${group.files[index].path}'),
               file: group.files[index],
               showFileName: widget.showFileName,
               remoteDeviceIp: widget.remoteDeviceIp,
               onTap: widget.onFileTap != null
                   ? () => widget.onFileTap!(group.files[index])
                   : null,
+              onShowActions: (ctx) =>
+                  widget.onShowActions(ctx, group.files[index]),
             ),
             childCount: group.files.length,
           ),
         ),
       ));
     }
-    // 底部留白
-    slivers.add(const SliverPadding(
-      padding: EdgeInsets.only(bottom: 16),
+    // 底部留白（预留悬浮 tabbar 高度）
+    slivers.add(SliverPadding(
+      padding: EdgeInsets.only(bottom: 16 + widget.bottomPadding),
       sliver: SliverToBoxAdapter(child: SizedBox.shrink()),
     ));
 
-    return Row(
+    return Stack(
       children: [
         // 文件列表（隐藏原生滚动条）
-        Expanded(
+        Positioned.fill(
           child: ScrollConfiguration(
             behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
             child: CustomScrollView(
@@ -1379,10 +1603,15 @@ class _TimelineViewState extends State<_TimelineView> {
             ),
           ),
         ),
-        // 右侧时间轴进度条（3/4 高度）
-        _TimelineScrollbar(
-          groups: widget.groups,
-          scrollController: widget.scrollController,
+        // 右侧悬浮液态玻璃进度条（覆盖在列表之上，不挤压列表空间）
+        Positioned(
+          right: 4,
+          top: 0,
+          bottom: 0,
+          width: 36,
+          child: _FloatingScrollbar(
+            scrollController: widget.scrollController,
+          ),
         ),
       ],
     );
@@ -1400,15 +1629,21 @@ class _ExtensionView extends StatelessWidget {
   final int crossAxisCount;
   final void Function(FileItem)? onFileTap;
   final String? remoteDeviceIp;
+  final void Function(BuildContext context, FileItem file) onShowActions;
   final ScrollController scrollController;
+
+  /// 底部预留（手机端悬浮 tabbar 高度），加到滚动内容底部
+  final double bottomPadding;
 
   const _ExtensionView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
+    required this.onShowActions,
     this.onFileTap,
     this.remoteDeviceIp,
     required this.scrollController,
+    this.bottomPadding = 0,
   });
 
   @override
@@ -1425,16 +1660,14 @@ class _ExtensionView extends StatelessWidget {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: colors.primaryWithAlpha(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
+                decoration: GlassCapsuleDecoration.build(colors, 8),
                 child: Text(
                   group.label,
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: colors.iconActive,
+                    // 深色模式：液态玻璃胶囊上用白字；浅色模式保持主色
+                    color: colors.isDark ? Colors.white : colors.iconActive,
                   ),
                 ),
               ),
@@ -1453,38 +1686,57 @@ class _ExtensionView extends StatelessWidget {
       slivers.add(SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         sliver: SliverGrid(
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
+          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 150,
             crossAxisSpacing: 8,
             mainAxisSpacing: 8,
             childAspectRatio: 0.85,
           ),
           delegate: SliverChildBuilderDelegate(
             (context, index) => FileListItem(
+              key: ValueKey('$remoteDeviceIp|${group.files[index].path}'),
               file: group.files[index],
               showFileName: showFileName,
               remoteDeviceIp: remoteDeviceIp,
               onTap: onFileTap != null
                   ? () => onFileTap!(group.files[index])
                   : null,
+              onShowActions: (ctx) =>
+                  onShowActions(ctx, group.files[index]),
             ),
             childCount: group.files.length,
           ),
         ),
       ));
     }
-    // 底部留白
-    slivers.add(const SliverPadding(
-      padding: EdgeInsets.only(bottom: 16),
+    // 底部留白（预留悬浮 tabbar 高度）
+    slivers.add(SliverPadding(
+      padding: EdgeInsets.only(bottom: 16 + bottomPadding),
       sliver: SliverToBoxAdapter(child: SizedBox.shrink()),
     ));
 
-    return ScrollConfiguration(
-      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-      child: CustomScrollView(
-        controller: scrollController,
-        slivers: slivers,
-      ),
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+            child: CustomScrollView(
+              controller: scrollController,
+              slivers: slivers,
+            ),
+          ),
+        ),
+        // 右侧悬浮液态玻璃进度条（覆盖在列表之上，不挤压列表空间）
+        Positioned(
+          right: 4,
+          top: 0,
+          bottom: 0,
+          width: 36,
+          child: _FloatingScrollbar(
+            scrollController: scrollController,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1500,15 +1752,21 @@ class _TimelineExtensionView extends StatelessWidget {
   final int crossAxisCount;
   final void Function(FileItem)? onFileTap;
   final String? remoteDeviceIp;
+  final void Function(BuildContext context, FileItem file) onShowActions;
   final ScrollController scrollController;
+
+  /// 底部预留（手机端悬浮 tabbar 高度），加到滚动内容底部
+  final double bottomPadding;
 
   const _TimelineExtensionView({
     required this.groups,
     required this.showFileName,
     required this.crossAxisCount,
+    required this.onShowActions,
     this.onFileTap,
     this.remoteDeviceIp,
     required this.scrollController,
+    this.bottomPadding = 0,
   });
 
   @override
@@ -1525,16 +1783,14 @@ class _TimelineExtensionView extends StatelessWidget {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: colors.primaryWithAlpha(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
+                decoration: GlassCapsuleDecoration.build(colors, 8),
                 child: Text(
                   group.label,
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: colors.iconActive,
+                    // 深色模式：液态玻璃胶囊上用白字；浅色模式保持主色
+                    color: colors.isDark ? Colors.white : colors.iconActive,
                   ),
                 ),
               ),
@@ -1581,20 +1837,23 @@ class _TimelineExtensionView extends StatelessWidget {
         slivers.add(SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: SliverGrid(
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: crossAxisCount,
+            gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 150,
               crossAxisSpacing: 8,
               mainAxisSpacing: 8,
               childAspectRatio: 0.85,
             ),
             delegate: SliverChildBuilderDelegate(
               (context, index) => FileListItem(
+                key: ValueKey('$remoteDeviceIp|${extGroup.files[index].path}'),
                 file: extGroup.files[index],
                 showFileName: showFileName,
                 remoteDeviceIp: remoteDeviceIp,
                 onTap: onFileTap != null
                     ? () => onFileTap!(extGroup.files[index])
                     : null,
+                onShowActions: (ctx) =>
+                    onShowActions(ctx, extGroup.files[index]),
               ),
               childCount: extGroup.files.length,
             ),
@@ -1602,220 +1861,298 @@ class _TimelineExtensionView extends StatelessWidget {
         ));
       }
     }
-    // 底部留白
-    slivers.add(const SliverPadding(
-      padding: EdgeInsets.only(bottom: 16),
+    // 底部留白（预留悬浮 tabbar 高度）
+    slivers.add(SliverPadding(
+      padding: EdgeInsets.only(bottom: 16 + bottomPadding),
       sliver: SliverToBoxAdapter(child: SizedBox.shrink()),
     ));
 
-    return ScrollConfiguration(
-      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-      child: CustomScrollView(
-        controller: scrollController,
-        slivers: slivers,
-      ),
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+            child: CustomScrollView(
+              controller: scrollController,
+              slivers: slivers,
+            ),
+          ),
+        ),
+        // 右侧悬浮液态玻璃进度条（覆盖在列表之上，不挤压列表空间）
+        Positioned(
+          right: 4,
+          top: 0,
+          bottom: 0,
+          width: 36,
+          child: _FloatingScrollbar(
+            scrollController: scrollController,
+          ),
+        ),
+      ],
     );
   }
 }
 
-/// 右侧时间轴胶囊进度条
-class _TimelineScrollbar extends StatefulWidget {
-  final List<TimelineGroup> groups;
+/// 右侧悬浮液态玻璃进度条
+///
+/// 仅显示滑块（无轨道），默认隐藏：列表滚动/拖动时出现，停止滚动 3s 后自动隐藏。
+/// 以悬浮层方式叠加在列表之上，不挤压列表空间；滑块采用与底部 tabbar 同款的
+/// 液态玻璃质感，按下/拖动时切换为激活形态（放大、变蓝）并主动控制滚动。
+class _FloatingScrollbar extends StatefulWidget {
   final ScrollController scrollController;
 
-  const _TimelineScrollbar({
-    required this.groups,
+  const _FloatingScrollbar({
     required this.scrollController,
   });
 
   @override
-  State<_TimelineScrollbar> createState() => _TimelineScrollbarState();
+  State<_FloatingScrollbar> createState() => _FloatingScrollbarState();
 }
 
-class _TimelineScrollbarState extends State<_TimelineScrollbar> {
-  double _scrollFraction = 0;
-  bool _isDragging = false;
+class _FloatingScrollbarState extends State<_FloatingScrollbar> {
+  double _fraction = 0;
+  bool _visible = false;
+  bool _pressed = false; // 触摸/按住滑块（激活态：变蓝、放大）
+  bool _dragging = false; // 是否正在拖动
+  Timer? _hideTimer;
+
+  // 由 build 记录的可视轨道区域（用于手势换算）
+  double _trackTop = 0;
+  double _trackHeight = 0;
 
   @override
   void initState() {
     super.initState();
     widget.scrollController.addListener(_onScroll);
+    // 首次布局后滚动控制器才附加 position（hasClients 才为 true）。
+    // 主动重建一次，让热区即刻可用（滑块仍保持默认隐藏，滚动时才出现）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
   }
 
   @override
   void dispose() {
     widget.scrollController.removeListener(_onScroll);
+    _hideTimer?.cancel();
     super.dispose();
   }
 
+  bool get _hasContent {
+    final c = widget.scrollController;
+    return c.hasClients && c.position.maxScrollExtent > 0;
+  }
+
   void _onScroll() {
-    final controller = widget.scrollController;
-    if (controller.hasClients && controller.position.maxScrollExtent > 0) {
-      setState(() {
-        _scrollFraction = controller.offset / controller.position.maxScrollExtent;
-      });
+    final c = widget.scrollController;
+    if (_hasContent) {
+      _fraction = (c.offset / c.position.maxScrollExtent).clamp(0.0, 1.0);
+    } else {
+      _fraction = 0;
+    }
+    _appearThenAutoHide();
+  }
+
+  /// 出现并启动 3s 自动隐藏倒计时（拖拽中不隐藏）
+  void _appearThenAutoHide() {
+    if (_dragging) return;
+    setState(() => _visible = true);
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && !_dragging) {
+        setState(() => _visible = false);
+      }
+    });
+  }
+
+  void _onTapDown(double localY) {
+    // 触摸滑块：进入激活态（变蓝、放大），跳转到该位置，
+    // 短暂激活反馈后若无后续拖动则恢复。
+    setState(() => _pressed = true);
+    _hideTimer?.cancel();
+    _jumpTo(localY);
+    _hideTimer = Timer(const Duration(milliseconds: 600), () {
+      if (mounted && !_dragging) {
+        setState(() => _pressed = false);
+        _appearThenAutoHide();
+      }
+    });
+  }
+
+  void _onDragStart(double thumbY, DragStartDetails d) {
+    setState(() {
+      _dragging = true;
+      _pressed = true;
+      _visible = true;
+    });
+    _hideTimer?.cancel();
+    // 落点即当前进度，让滑块保持在手指下方（再按 delta 增量移动）
+    if (_hasContent) {
+      final absY = thumbY + d.localPosition.dy;
+      final frac = ((absY - _trackTop) / _trackHeight).clamp(0.0, 1.0);
+      setState(() => _fraction = frac);
+      widget.scrollController.jumpTo(
+          frac * widget.scrollController.position.maxScrollExtent);
     }
   }
 
-  String get _currentLabel {
-    if (widget.groups.isEmpty) return '';
-    final index = widget.groups.length > 1
-        ? (_scrollFraction * (widget.groups.length - 1)).round()
-        : 0;
-    return widget.groups[index.clamp(0, widget.groups.length - 1)].label;
+  void _onDragEnd() {
+    setState(() {
+      _dragging = false;
+      _pressed = false;
+    });
+    _appearThenAutoHide();
   }
 
-  void _onDragUpdate(double localY, double totalHeight) {
-    final fraction = (localY / totalHeight).clamp(0.0, 1.0);
-    final controller = widget.scrollController;
-    if (controller.hasClients && controller.position.maxScrollExtent > 0) {
-      controller.jumpTo(fraction * controller.position.maxScrollExtent);
-    }
+  void _jumpTo(double localY) {
+    final c = widget.scrollController;
+    if (!_hasContent) return;
+    final frac = ((localY - _trackTop) / _trackHeight).clamp(0.0, 1.0);
+    c.jumpTo(frac * c.position.maxScrollExtent);
   }
 
-  void _jumpToNearestGroup(double localY, double totalHeight) {
-    final fraction = (localY / totalHeight).clamp(0.0, 1.0);
-    if (widget.groups.isEmpty) return;
-    final index = widget.groups.length > 1
-        ? (fraction * (widget.groups.length - 1)).round()
-        : 0;
-    final clampedIndex = index.clamp(0, widget.groups.length - 1);
-    final controller = widget.scrollController;
-    if (controller.hasClients && controller.position.maxScrollExtent > 0) {
-      final targetFraction = widget.groups.length > 1
-          ? clampedIndex / (widget.groups.length - 1)
-          : 0.0;
-      controller.animateTo(
-        targetFraction * controller.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-    }
+  void _onDragUpdate(DragUpdateDetails d) {
+    if (!_hasContent) return;
+    // 按手指增量（delta.dy）换算进度，1:1 跟随手指，避免过快/越界
+    final step = d.delta.dy / _trackHeight;
+    setState(() => _fraction = (_fraction + step).clamp(0.0, 1.0));
+    widget.scrollController.jumpTo(
+        _fraction * widget.scrollController.position.maxScrollExtent);
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
+    final isDark = colors.isDark;
+    final theme = Theme.of(context);
+    final activeColor = theme.colorScheme.primary;
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final trackHeight = constraints.maxHeight;
-        // 视觉轨道高度为可用空间的 3/4，触摸区域与视觉一致
-        final visualHeight = trackHeight * 0.75;
+        final totalH = constraints.maxHeight;
+        // 计算悬浮轨道区域：
+        //   轨道底部 = 屏幕底 - (安全区 + tabbar 高度 + 底部安全间隔)；
+        //   轨道高度 = (轨道可用高度) * 80%，顶部自然留白 20%。
+        final safeBottom = MediaQuery.of(context).padding.bottom;
+        const tabbarHeight = 78.0; // 悬浮 tabbar 高度（含上下 padding）
+        const bottomGap = 10.0; // 轨道底边距 tabbar 顶部的安全间隔
+        final trackBottom = totalH - (safeBottom + tabbarHeight + bottomGap);
+        final span = trackBottom.clamp(0.0, totalH); // 可用高度
+        _trackHeight = span * 0.8; // 80% 高度
+        _trackTop = span - _trackHeight; // 轨道顶边（顶部留白 20%）
 
-        const containerWidth = 40.0;
-        const trackWidth = 6.0;
-        final trackLeft = (containerWidth - trackWidth) / 2;
+        final hasContent = _hasContent && _trackHeight > 0;
+        final active = _pressed || _dragging;
+        final showThumb = hasContent && (_visible || active);
 
-        final thumbWidth = _isDragging ? 30.0 : 20.0;
-        final thumbHeight = _isDragging ? 52.0 : 36.0;
-        final thumbLeft = (containerWidth - thumbWidth) / 2;
-        final thumbY = (_scrollFraction * (visualHeight - thumbHeight))
-            .clamp(0.0, visualHeight - thumbHeight);
+        final thumbW = active ? 36.0 : 28.0;
+        final thumbH = active ? 60.0 : 46.0;
+        final thumbX = (constraints.maxWidth - thumbW) / 2;
+        final thumbY = (_trackTop +
+                _fraction * (_trackHeight - thumbH))
+            .clamp(_trackTop, _trackTop + _trackHeight - thumbH);
 
-        return SizedBox(
-          width: containerWidth,
-          height: trackHeight,
-          child: Center(
-            child: SizedBox(
-              width: containerWidth,
-              height: visualHeight,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (details) {
-                  _jumpToNearestGroup(details.localPosition.dy, visualHeight);
-                },
-                onVerticalDragStart: (_) => setState(() => _isDragging = true),
-                onVerticalDragUpdate: (details) {
-                  _onDragUpdate(details.localPosition.dy, visualHeight);
-                },
-                onVerticalDragEnd: (_) => setState(() => _isDragging = false),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    // 轨道（始终居中）
-                    Positioned(
-                      left: trackLeft,
-                      top: 0,
-                      bottom: 0,
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // 液态玻璃滑块：唯一交互元素，分激活/未激活两种形态。
+            // 未激活时默认跟随列表滚动进度（_onScroll 更新 fraction）；
+            // 按下/拖动时切换为激活形态，抓住滑块主动控制滚动位置。
+            if (showThumb)
+              Positioned(
+                left: thumbX,
+                top: thumbY,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => _onTapDown(thumbY + d.localPosition.dy),
+                  onVerticalDragStart: (d) => _onDragStart(thumbY, d),
+                  onVerticalDragUpdate: (d) => _onDragUpdate(d),
+                  onVerticalDragEnd: (_) => _onDragEnd(),
+                  child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  curve: Curves.easeOut,
+                  width: thumbW,
+                  height: thumbH,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(thumbW / 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(
+                          alpha: isDark ? 0.3 : 0.12,
+                        ),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                      if (active)
+                        BoxShadow(
+                          color: activeColor.withValues(alpha: 0.35),
+                          blurRadius: 14,
+                          spreadRadius: 1,
+                        ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(thumbW / 2),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
                       child: Container(
-                        width: trackWidth,
                         decoration: BoxDecoration(
-                          color: colors.inputBg,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    // 拖拽时日期提示
-                    if (_isDragging)
-                      Positioned(
-                        left: -56,
-                        top: thumbY + thumbHeight / 2 - 14,
-                        child: Container(
-                          width: 52,
-                          height: 28,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: AppColors.primary,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            _currentLabel,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ),
-                    // 胶囊滑块
-                    Positioned(
-                      left: thumbLeft,
-                      top: thumbY,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
-                        curve: Curves.easeOut,
-                        width: thumbWidth,
-                        height: thumbHeight,
-                        decoration: BoxDecoration(
-                          color: _isDragging
-                              ? AppColors.primary
-                              : colors.primaryWithAlpha(0.35),
+                          gradient: active
+                              ? LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    activeColor
+                                        .withValues(alpha: isDark ? 0.85 : 0.75),
+                                    activeColor.withValues(
+                                        alpha: isDark ? 0.55 : 0.5),
+                                  ],
+                                )
+                              : LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: isDark
+                                      ? const [
+                                          Color(0xB8383842),
+                                          Color(0x9924242A),
+                                        ]
+                                      : [
+                                          Colors.white
+                                              .withValues(alpha: 0.92),
+                                          Colors.white
+                                              .withValues(alpha: 0.6),
+                                        ],
+                                ),
                           borderRadius:
-                              BorderRadius.circular(thumbWidth / 2),
-                          boxShadow: _isDragging
-                              ? [
-                                  BoxShadow(
-                                    color:
-                                        colors.primaryWithAlpha(0.35),
-                                    blurRadius: 10,
-                                    spreadRadius: 1,
-                                  ),
-                                ]
-                              : [
-                                  BoxShadow(
-                                    color:
-                                        Colors.black.withValues(alpha: 0.1),
-                                    blurRadius: 4,
-                                    spreadRadius: 0,
-                                  ),
-                                ],
+                              BorderRadius.circular(thumbW / 2),
+                          border: Border.all(
+                            color: isDark
+                                ? Colors.white.withValues(alpha: 0.18)
+                                : Colors.white.withValues(alpha: 0.8),
+                            width: 1,
+                          ),
                         ),
                         child: Center(
                           child: Icon(
                             Icons.compress,
-                            size: _isDragging ? 20 : 16,
-                            color: Colors.white,
+                            size: active ? 20 : 16,
+                            color: active
+                                ? Colors.white
+                                : (isDark
+                                    ? Colors.white70
+                                    : const Color(0xFF1C1C1E)),
                           ),
                         ),
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
-          ),
+              ),
+            // 未激活/激活两种形态的滑块即唯一交互元素，无进度信息块
+          ],
         );
       },
     );
@@ -1864,23 +2201,24 @@ class _SidebarDeviceItemState extends State<_SidebarDeviceItem> {
           child: Container(
             margin: const EdgeInsets.only(bottom: 4),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: widget.isSelected
-                  ? colors.primaryWithAlpha(0.1)
-                  : showHover
-                      ? (isDark
-                          ? Colors.white.withValues(alpha: 0.12)
-                          : Colors.white)
-                      : Colors.transparent,
-              borderRadius: BorderRadius.circular(10),
-            ),
+            decoration: widget.isSelected
+                // 选中态：液态玻璃（深色白字呼叫胶囊）
+                ? GlassCapsuleDecoration.build(colors, 10)
+                : BoxDecoration(
+                    color: showHover
+                        ? (isDark
+                            ? Colors.white.withValues(alpha: 0.12)
+                            : Colors.white)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
             child: Row(
               children: [
                 Icon(
                   widget.icon,
                   size: 20,
                   color: widget.isSelected
-                      ? colors.iconActive
+                      ? (isDark ? Colors.white : colors.iconActive)
                       : colors.iconSecondary,
                 ),
                 const SizedBox(width: 10),
@@ -1893,7 +2231,7 @@ class _SidebarDeviceItemState extends State<_SidebarDeviceItem> {
                           ? FontWeight.w600
                           : FontWeight.w500,
                       color: widget.isSelected
-                          ? colors.iconActive
+                          ? (isDark ? Colors.white : colors.iconActive)
                           : colors.textPrimary,
                     ),
                   ),
@@ -1950,16 +2288,17 @@ class _SidebarCategoryItemState extends State<_SidebarCategoryItem> {
               horizontal: widget.compact ? 6 : 12,
               vertical: widget.compact ? 8 : 10,
             ),
-            decoration: BoxDecoration(
-              color: widget.isSelected
-                  ? colors.primaryWithAlpha(0.12)
-                  : showHover
-                      ? (isDark
-                          ? Colors.white.withValues(alpha: 0.12)
-                          : Colors.white)
-                      : Colors.transparent,
-              borderRadius: BorderRadius.circular(10),
-            ),
+            decoration: widget.isSelected
+                // 选中态：液态玻璃（深色白字/白图标呼叫胶囊）
+                ? GlassCapsuleDecoration.build(colors, 10)
+                : BoxDecoration(
+                    color: showHover
+                        ? (isDark
+                            ? Colors.white.withValues(alpha: 0.12)
+                            : Colors.white)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
             child: widget.compact
                 ? Column(
                     mainAxisSize: MainAxisSize.min,
@@ -1968,7 +2307,7 @@ class _SidebarCategoryItemState extends State<_SidebarCategoryItem> {
                         widget.icon,
                         size: 18,
                         color: widget.isSelected
-                            ? colors.iconActive
+                            ? (isDark ? Colors.white : colors.iconActive)
                             : colors.iconSecondary,
                       ),
                       const SizedBox(height: 4),
@@ -1983,7 +2322,7 @@ class _SidebarCategoryItemState extends State<_SidebarCategoryItem> {
                               ? FontWeight.w600
                               : FontWeight.w400,
                           color: widget.isSelected
-                              ? colors.iconActive
+                              ? (isDark ? Colors.white : colors.iconActive)
                               : colors.textPrimary,
                         ),
                       ),
@@ -1995,7 +2334,7 @@ class _SidebarCategoryItemState extends State<_SidebarCategoryItem> {
                         widget.icon,
                         size: 18,
                         color: widget.isSelected
-                            ? colors.iconActive
+                            ? (isDark ? Colors.white : colors.iconActive)
                             : colors.iconSecondary,
                       ),
                       const SizedBox(width: 10),
@@ -2008,7 +2347,7 @@ class _SidebarCategoryItemState extends State<_SidebarCategoryItem> {
                                 ? FontWeight.w600
                                 : FontWeight.w400,
                             color: widget.isSelected
-                                ? colors.iconActive
+                                ? (isDark ? Colors.white : colors.iconActive)
                                 : colors.textPrimary,
                           ),
                         ),
@@ -2087,22 +2426,23 @@ class _CategoryChip extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: isSelected ? colors.primaryWithAlpha(0.12) : colors.glassBg,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: isSelected
-                ? colors.primaryWithAlpha(0.3)
-                : colors.glassBorder,
-          ),
-        ),
+        decoration: isSelected
+            // 选中态：液态玻璃胶囊（深色模式下用白字/白图标呼应）
+            ? GlassCapsuleDecoration.build(colors, 20)
+            : BoxDecoration(
+                color: colors.glassBg,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: colors.glassBorder),
+              ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               icon,
               size: 16,
-              color: isSelected ? colors.iconActive : colors.iconSecondary,
+              color: isSelected
+                  ? (colors.isDark ? Colors.white : colors.iconActive)
+                  : colors.iconSecondary,
             ),
             const SizedBox(width: 6),
             Text(
@@ -2110,7 +2450,9 @@ class _CategoryChip extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                color: isSelected ? colors.iconActive : colors.textSecondary,
+                color: isSelected
+                    ? (colors.isDark ? Colors.white : colors.iconActive)
+                    : colors.textSecondary,
               ),
             ),
           ],

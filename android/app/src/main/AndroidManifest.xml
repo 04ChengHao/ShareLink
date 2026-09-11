@@ -97,5 +97,10 @@
             <action android:name="android.intent.action.VIEW"/>
             <data android:mimeType="*/*"/>
         </intent>
+        <!-- url_launcher 打开 content:// 文档 URI（文件/文件夹）需要包可见性 -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="content"/>
+        </intent>
     </queries>
 </manifest>

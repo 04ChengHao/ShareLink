@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/global_providers.dart';
 import '../../../core/services/storage_service.dart';
+import '../../file_browser/services/remote_file_service.dart';
 
 // ---------------------------------------------------------------------------
 // 共享内容设置（统一模型 + 持久化）
@@ -218,4 +219,30 @@ class SettingsTabNotifier extends Notifier<String> {
   String build() => 'general';
 
   set tab(String value) => state = value;
+}
+
+// ---------------------------------------------------------------------------
+// 缓存大小（实时统计）
+// ---------------------------------------------------------------------------
+
+/// 应用缓存总大小（字节）
+///
+/// 缓存写入/清除后大小变化，而设置页位于 IndexedStack 中保持存活，
+/// `initState` 仅在首次进入时执行——依赖本 provider 在以下时机刷新：
+/// - 手动点击「刷新」按钮
+/// - 每次进入设置页（由外壳导航触发）
+/// - 文件扫描完成（索引/缩略图写盘后可能变化）
+final cacheSizeProvider = NotifierProvider<CacheSizeNotifier, int>(
+  CacheSizeNotifier.new,
+);
+
+class CacheSizeNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// 重新扫描缓存目录并更新大小
+  Future<void> refresh() async {
+    final size = await RemoteFileService.instance.getTempCacheSize();
+    if (size != state) state = size;
+  }
 }

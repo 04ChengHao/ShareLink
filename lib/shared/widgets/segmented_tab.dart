@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/constants/app_colors.dart';
+import 'liquid_glass.dart';
 
 /// 分段选项卡项
 class SegmentedTabItem<T> {
@@ -46,40 +47,33 @@ class _SegmentedTabState<T> extends State<SegmentedTab<T>> {
   @override
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
+    // 激活内容颜色：与 tabbar 一致——深色模式用白字呼应半透明白胶囊，浅色用主色
+    final activeColor =
+        colors.isDark ? Colors.white : Theme.of(context).colorScheme.primary;
 
+    // 外层液态玻璃容器：半透明玻璃底 + 白色发光，内部激活胶囊悬浮其上
     return Container(
       height: widget.height,
       decoration: BoxDecoration(
-        color: colors.inputBg,
+        color: colors.glassBg,
         borderRadius: BorderRadius.circular(widget.borderRadius),
-        border: Border.all(color: colors.inputBorder),
+        border: Border.all(color: colors.glassBorder),
         boxShadow: [
           BoxShadow(
-            color: colors.isDark
-                ? Colors.black.withValues(alpha: 0.3)
-                : Colors.black.withValues(alpha: 0.06),
-            offset: const Offset(0, 1),
-            blurRadius: 2,
-            spreadRadius: 0,
-          ),
-          BoxShadow(
-            color: colors.isDark
-                ? Colors.white.withValues(alpha: 0.03)
-                : Colors.white.withValues(alpha: 0.8),
-            offset: const Offset(0, -1),
-            blurRadius: 1,
-            spreadRadius: 0,
+            color: Colors.white.withValues(alpha: colors.isDark ? 0.12 : 0.45),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
       child: widget.multiSelect
-          ? _buildMultiSelect(colors)
-          : _buildSingleSelect(colors),
+          ? _buildMultiSelect(colors, activeColor)
+          : _buildSingleSelect(colors, activeColor),
     );
   }
 
-  /// 单选模式：滑动胶囊
-  Widget _buildSingleSelect(AppColorScheme colors) {
+  /// 单选模式：一个激活胶囊在选项之间滑动（同 tabbar）
+  Widget _buildSingleSelect(AppColorScheme colors, Color activeColor) {
     final selectedIndex = widget.items
         .indexWhere((item) => widget.selectedValues.contains(item.value));
     final activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
@@ -90,15 +84,20 @@ class _SegmentedTabState<T> extends State<SegmentedTab<T>> {
         return Stack(
           clipBehavior: Clip.none,
           children: [
-            // 滑动胶囊
+            // 滑动胶囊（液态玻璃激活块）
             AnimatedPositioned(
               duration: const Duration(milliseconds: 300),
               curve: Curves.easeInOutCubic,
-              left: activeIndex * tabWidth + 2,
-              top: 2,
-              bottom: 2,
-              width: tabWidth - 4,
-              child: _buildCapsule(colors),
+              left: activeIndex * tabWidth + 3,
+              top: 3,
+              bottom: 3,
+              width: tabWidth - 6,
+              child: DecoratedBox(
+                decoration: GlassCapsuleDecoration.build(
+                  colors,
+                  widget.borderRadius - 3,
+                ),
+              ),
             ),
             // Tab 项
             Row(
@@ -109,7 +108,12 @@ class _SegmentedTabState<T> extends State<SegmentedTab<T>> {
                   child: GestureDetector(
                     onTap: () => _handleSingleSelect(item.value),
                     behavior: HitTestBehavior.opaque,
-                    child: _buildTabContent(item, isSelected, colors),
+                    child: _buildTabContent(
+                      item,
+                      isSelected,
+                      colors,
+                      activeColor,
+                    ),
                   ),
                 );
               }).toList(),
@@ -120,8 +124,8 @@ class _SegmentedTabState<T> extends State<SegmentedTab<T>> {
     );
   }
 
-  /// 多选模式：每个 tab 独立胶囊
-  Widget _buildMultiSelect(AppColorScheme colors) {
+  /// 多选模式：每个 tab 独立切换激活块（各选项独立发光胶囊）
+  Widget _buildMultiSelect(AppColorScheme colors, Color activeColor) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: widget.items.map((item) {
@@ -132,32 +136,23 @@ class _SegmentedTabState<T> extends State<SegmentedTab<T>> {
             behavior: HitTestBehavior.opaque,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              margin: const EdgeInsets.all(2),
+              curve: Curves.easeOut,
+              margin: const EdgeInsets.all(3),
               decoration: isSelected
-                  ? BoxDecoration(
-                      color: colors.primaryWithAlpha(0.12),
-                      borderRadius:
-                          BorderRadius.circular(widget.borderRadius - 2),
-                      border:
-                          Border.all(color: colors.primaryWithAlpha(0.3)),
+                  ? GlassCapsuleDecoration.build(
+                      colors,
+                      widget.borderRadius - 3,
+                      strong: false,
                     )
-                  : null,
-              child: _buildTabContent(item, isSelected, colors),
+                  : BoxDecoration(
+                      borderRadius:
+                          BorderRadius.circular(widget.borderRadius - 3),
+                    ),
+              child: _buildTabContent(item, isSelected, colors, activeColor),
             ),
           ),
         );
       }).toList(),
-    );
-  }
-
-  /// 激活胶囊
-  Widget _buildCapsule(AppColorScheme colors) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.primaryWithAlpha(0.12),
-        borderRadius: BorderRadius.circular(widget.borderRadius - 2),
-        border: Border.all(color: colors.primaryWithAlpha(0.3)),
-      ),
     );
   }
 
@@ -166,18 +161,16 @@ class _SegmentedTabState<T> extends State<SegmentedTab<T>> {
     SegmentedTabItem<T> item,
     bool isSelected,
     AppColorScheme colors,
+    Color activeColor,
   ) {
+    final color = isSelected ? activeColor : colors.textSecondary;
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              item.icon,
-              size: 20,
-              color: isSelected ? colors.iconActive : colors.iconSecondary,
-            ),
+            Icon(item.icon, size: 20, color: color),
             if (item.label != null) ...[
               const SizedBox(width: 6),
               Flexible(
@@ -187,10 +180,8 @@ class _SegmentedTabState<T> extends State<SegmentedTab<T>> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 14,
-                    fontWeight:
-                        isSelected ? FontWeight.w600 : FontWeight.w400,
-                    color:
-                        isSelected ? colors.iconActive : colors.textSecondary,
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                    color: color,
                   ),
                 ),
               ),

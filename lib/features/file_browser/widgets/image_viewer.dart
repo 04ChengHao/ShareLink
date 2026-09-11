@@ -26,7 +26,7 @@ import '../services/remote_file_service.dart';
 ///
 /// **透明图片背景**：使用透明网格背景（棋盘格）
 ///
-/// **还原按钮**：还原到图片打开时的初始缩放（contained 模式）
+/// **还原按钮**：回到contained铺满并居中
 class ImageViewer extends StatefulWidget {
   final String imagePath;
   final String? remoteDeviceIp;
@@ -51,6 +51,7 @@ class ImageViewer extends StatefulWidget {
 
 class _ImageViewerState extends State<ImageViewer> {
   late final PhotoViewController _controller;
+  late final PhotoViewScaleStateController _scaleStateController;
 
   bool _showControls = true;
   double _rotation = 0.0;
@@ -58,10 +59,15 @@ class _ImageViewerState extends State<ImageViewer> {
   // 初始缩放比例（图片首次加载后的 contained 缩放）
   double? _initialScale;
 
+  /// 缩放范围：20% ~ 500%
+  static const double _minScale = 0.2;
+  static const double _maxScale = 5.0;
+
   @override
   void initState() {
     super.initState();
     _controller = PhotoViewController();
+    _scaleStateController = PhotoViewScaleStateController();
     _controller.outputStateStream.listen((value) {
       if (_initialScale == null && value.scale != null) {
         _initialScale = value.scale;
@@ -72,6 +78,7 @@ class _ImageViewerState extends State<ImageViewer> {
   @override
   void dispose() {
     _controller.dispose();
+    _scaleStateController.dispose();
     super.dispose();
   }
 
@@ -81,22 +88,35 @@ class _ImageViewerState extends State<ImageViewer> {
 
   void _zoomIn() {
     final current = _controller.value.scale ?? _initialScale ?? 1.0;
-    _controller.scale = (current * 1.25).clamp(0.1, 10.0);
+    _controller.scale = (current * 1.25).clamp(_minScale, _maxScale);
   }
 
   void _zoomOut() {
     final current = _controller.value.scale ?? _initialScale ?? 1.0;
-    _controller.scale = (current / 1.25).clamp(0.1, 10.0);
+    _controller.scale = (current / 1.25).clamp(_minScale, _maxScale);
   }
 
   void _rotate() {
+    // 仅旋转、不放大不缩小：记录旋转前比例，旋转后恢复，并让回中；
+    // 不重建 PhotoView，避免闪屏
+    final prevScale = _controller.value.scale ?? _initialScale ?? 1.0;
     setState(() => _rotation += 90.0);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _controller.scale = prevScale.clamp(_minScale, _maxScale);
+      _controller.position = Offset.zero;
+    });
   }
 
   void _reset() {
-    _controller.scale = _initialScale;
-    _controller.position = Offset.zero;
+    // 回到 0°（未旋转方向），并用 ScaleStateController 强制 contained 铺满并居中，
+    // 从根本上消除旋转+滑动后的偏移
     setState(() => _rotation = 0.0);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _scaleStateController.scaleState = PhotoViewScaleState.initial;
+      _controller.position = Offset.zero;
+    });
   }
 
   @override
@@ -113,11 +133,11 @@ class _ImageViewerState extends State<ImageViewer> {
         : FileImage(File(widget.imagePath));
 
     return Scaffold(
-      backgroundColor: Colors.transparent,
+      backgroundColor: const Color(0xFF161616),
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 透明网格背景
+          // 透明网格背景（棋盘格）：垫在图片下，透明区域可见
           const _TransparentGridBackground(),
 
           // 图片（旋转在 PhotoView 内部实现，使触摸移动方向与视觉一致）
@@ -125,6 +145,7 @@ class _ImageViewerState extends State<ImageViewer> {
             onTap: _toggleControls,
             child: _PlatformPhotoView(
               controller: _controller,
+              scaleStateController: _scaleStateController,
               imageProvider: imageProvider,
               colors: colors,
               rotationRadians: _rotation * math.pi / 180,
@@ -230,14 +251,22 @@ class _ImageViewerState extends State<ImageViewer> {
   }
 }
 /// 平台感知的 PhotoView（旋转在内部实现，保证触摸移动方向与视觉一致）
+///
+/// 通过显式传入“旋转后交换的宽高”作为 childSize，使缩放/平移边界覆盖旋转后
+/// 的最长边（旋转后宽度 = 原长度，可平移看到细节）。
+/// 不设置 filterQuality（保持 none）以免图片被放大错乱；用同一个
+/// PhotoView 实例 + ScaleStateController，避免旋转时重建引起的闪屏。
 class _PlatformPhotoView extends StatefulWidget {
   final PhotoViewController controller;
+  final PhotoViewScaleStateController scaleStateController;
   final ImageProvider imageProvider;
   final AppColorScheme colors;
   final double rotationRadians;
 
   const _PlatformPhotoView({
+    super.key,
     required this.controller,
+    required this.scaleStateController,
     required this.imageProvider,
     required this.colors,
     this.rotationRadians = 0,
@@ -253,65 +282,82 @@ class _PlatformPhotoViewState extends State<_PlatformPhotoView> {
   @override
   Widget build(BuildContext context) {
     final isDesktop = PlatformUtils.isDesktop;
+    // 旋转量化到 90° 倍数
+    final turns = (widget.rotationRadians / (math.pi / 2)).round() % 4;
 
-    final photoView = PhotoView.customChild(
-      controller: widget.controller,
-      minScale: PhotoViewComputedScale.contained,
-      maxScale: PhotoViewComputedScale.covered * 5,
-      initialScale: PhotoViewComputedScale.contained,
-      basePosition: Alignment.center,
-      backgroundDecoration: const BoxDecoration(color: Colors.transparent),
-      gestureDetectorBehavior: HitTestBehavior.opaque,
-      child: Transform.rotate(
-        angle: widget.rotationRadians,
-        child: Image(
-          image: widget.imageProvider,
-          fit: BoxFit.contain,
-          gaplessPlayback: true,
-          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-            if (wasSynchronouslyLoaded) return child;
-            return AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              child: frame == null
-                  ? Center(
-                      child: CircularProgressIndicator(
-                        color: widget.colors.iconActive,
-                      ),
-                    )
-                  : child,
-            );
-          },
-          errorBuilder: (context, error, stackTrace) => Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.broken_image,
-                  size: 64,
-                  color: widget.colors.textHint,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final outer = constraints.biggest;
+        final swapped = turns.isOdd;
+        // 旋转后内容外接盒尺寸：90°/270° 交换宽高，覆盖旋转后的最长边
+        final childSize = Size(
+          swapped ? outer.height : outer.width,
+          swapped ? outer.width : outer.height,
+        );
+
+        final photoView = PhotoView.customChild(
+          controller: widget.controller,
+          scaleStateController: widget.scaleStateController,
+          // 显式传入旋转后的尺寸，让缩放/平移边界随旋转变化
+          childSize: childSize,
+          minScale: _ImageViewerState._minScale,
+          maxScale: _ImageViewerState._maxScale,
+          initialScale: PhotoViewComputedScale.contained,
+          basePosition: Alignment.center,
+          backgroundDecoration: const BoxDecoration(color: Colors.transparent),
+          gestureDetectorBehavior: HitTestBehavior.opaque,
+          child: RotatedBox(
+            quarterTurns: turns,
+            child: Image(
+              image: widget.imageProvider,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                if (wasSynchronouslyLoaded) return child;
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: frame == null
+                      ? Center(
+                          child: CircularProgressIndicator(
+                            color: widget.colors.iconActive,
+                          ),
+                        )
+                      : child,
+                );
+              },
+              errorBuilder: (context, error, stackTrace) => Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.broken_image,
+                      size: 64,
+                      color: widget.colors.textHint,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      AppStrings.fileLoadFailed,
+                      style: TextStyle(color: widget.colors.textSecondary),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  AppStrings.fileLoadFailed,
-                  style: TextStyle(color: widget.colors.textSecondary),
-                ),
-              ],
+              ),
             ),
           ),
-        ),
-      ),
-    );
+        );
 
-    if (!isDesktop) {
-      return photoView;
-    }
+        if (!isDesktop) {
+          return photoView;
+        }
 
-    return Listener(
-      onPointerSignal: _onPointerSignal,
-      onPointerHover: (event) {
-        _mousePosition = event.position;
+        return Listener(
+          onPointerSignal: _onPointerSignal,
+          onPointerHover: (event) {
+            _mousePosition = event.position;
+          },
+          child: photoView,
+        );
       },
-      child: photoView,
     );
   }
 
@@ -320,7 +366,7 @@ class _PlatformPhotoViewState extends State<_PlatformPhotoView> {
       final currentScale = widget.controller.value.scale ?? 1.0;
       final direction = event.scrollDelta.dy > 0 ? -1 : 1;
       final newScale = (currentScale * (1 + direction * 0.15))
-          .clamp(0.1, 10.0);
+          .clamp(_ImageViewerState._minScale, _ImageViewerState._maxScale);
 
       final renderBox = context.findRenderObject() as RenderBox?;
       if (renderBox == null) return;

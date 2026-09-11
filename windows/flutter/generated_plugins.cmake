@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   fc_native_video_thumbnail
   media_kit_libs_windows_video
   media_kit_video
+  media_metadata
   permission_handler_windows
   screen_brightness_windows
   screen_retriever_windows

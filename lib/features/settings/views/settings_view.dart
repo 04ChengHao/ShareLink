@@ -1,16 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:unified_popups/unified_popups.dart';
+import 'package:unified_popups/unified_popups.dart'
+    hide ToastType;
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/providers/global_providers.dart';
+import '../../../core/services/app_image_cache_manager.dart';
 import '../../../core/services/device_info_service.dart';
 import '../../../core/utils/platform_utils.dart';
 import '../../../features/file_browser/services/remote_file_service.dart';
+import '../../../features/file_browser/services/local_file_service.dart';
+import '../../../features/file_browser/services/file_cache_service.dart';
+import '../../../features/file_browser/services/media_duration_service.dart';
+import '../../../features/file_browser/providers/file_browser_provider.dart';
+import '../../../shared/widgets/app_toast.dart';
 import '../../../shared/widgets/glass_dropdown.dart';
 import '../../../shared/widgets/glass_switch.dart';
+import '../../../shared/widgets/liquid_glass.dart';
 import '../../../shared/widgets/neuomorphic_style.dart';
+import '../providers/settings_provider.dart';
 import '../widgets/password_input_field.dart';
 import '../widgets/shared_content_drawer.dart';
 import '../widgets/shared_content_sheet.dart';
@@ -45,8 +54,15 @@ class _MobileSettingsView extends ConsumerWidget {
 
     return Scaffold(
       body: SafeArea(
+        top: true,
+        bottom: false,
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 48, 16, 16),
+          padding: EdgeInsets.fromLTRB(
+            16,
+            48,
+            16,
+            MediaQuery.of(context).padding.bottom,
+          ),
           children: [
             _DeviceHeader(deviceName: deviceName, info: deviceInfo.value),
             const SizedBox(height: 24),
@@ -401,13 +417,13 @@ class _DesktopSharedSection extends ConsumerWidget {
 // 桌面端 - 缓存设置
 // ---------------------------------------------------------------------------
 
-class _DesktopCacheSection extends StatefulWidget {
+class _DesktopCacheSection extends ConsumerStatefulWidget {
   @override
-  State<_DesktopCacheSection> createState() => _DesktopCacheSectionState();
+  ConsumerState<_DesktopCacheSection> createState() =>
+      _DesktopCacheSectionState();
 }
 
-class _DesktopCacheSectionState extends State<_DesktopCacheSection> {
-  int _cacheSize = 0;
+class _DesktopCacheSectionState extends ConsumerState<_DesktopCacheSection> {
   bool _clearing = false;
 
   @override
@@ -416,21 +432,35 @@ class _DesktopCacheSectionState extends State<_DesktopCacheSection> {
     _refreshSize();
   }
 
-  Future<void> _refreshSize() async {
-    final size = await RemoteFileService.instance.getTempCacheSize();
-    if (mounted) setState(() => _cacheSize = size);
-  }
+  Future<void> _refreshSize() =>
+      ref.read(cacheSizeProvider.notifier).refresh();
 
   Future<void> _clearCache() async {
     if (_clearing) return;
+    final confirmed = await _confirmClearCache(context);
+    if (confirmed != true || !context.mounted) return;
     setState(() => _clearing = true);
+    // 内存与磁盘必须**一致清除**，否则内存里的旧映射指向已删除的磁盘文件，
+    // 缩略图会永远渲染失败（远程设备经 /thumb 接口也会命中旧映射）
+    // 1. 先清远程图片缓存（清空其索引与文件，保持 flutter_cache_manager 状态一致）
+    try {
+      await AppImageCacheManager.instance.emptyCache();
+    } catch (_) {}
+    // 2. 本地文件索引 + 缩略图内存映射（clearAllCaches 内部同步清空 _thumbnailCache）
+    LocalFileService.instance.clearAllCaches();
+    // 3. 清空整个缓存目录（索引、缩略图、ts 合并、临时文件、远程图片）
     await RemoteFileService.instance.clearAllTempFiles();
+    // 4. 远程文件列表 + 媒体时长
+    await FileCacheService.instance.clearAllCaches();
+    MediaDurationService.instance.clearAll();
+    // 5. Flutter 内存图片缓存（避免已解码图片继续占用内存/显示旧内容）
+    PaintingBinding.instance.imageCache.clear();
+    ref.invalidate(fileListProvider);
+    ref.read(downloadedStampProvider.notifier).bump();
     await _refreshSize();
     if (mounted) {
       setState(() => _clearing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('缓存已清空')),
-      );
+      showAppToast(context, '缓存已清空', type: ToastType.success);
     }
   }
 
@@ -448,6 +478,14 @@ class _DesktopCacheSectionState extends State<_DesktopCacheSection> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = AppColorScheme.of(context);
+    final cacheSize = ref.watch(cacheSizeProvider);
+    // 扫描完成时自动刷新缓存大小：进入页面时扫描可能仍在进行，
+    // 索引/缩略图尚未写盘，此时统计会是 0，扫描结束后需重新统计
+    ref.listen<FileScanState>(fileScanStateProvider, (prev, next) {
+      if (next == FileScanState.done || next == FileScanState.empty) {
+        _refreshSize();
+      }
+    });
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -463,7 +501,10 @@ class _DesktopCacheSectionState extends State<_DesktopCacheSection> {
           child: _NeuTapContent(
             leading: Icon(Icons.cached, size: 22, color: colors.iconSecondary),
             title: AppStrings.cacheData,
-            subtitle: '${AppStrings.cacheDataSub}：${_formatSize(_cacheSize)}',
+            subtitle: '${AppStrings.cacheDataSub}：${_formatSize(cacheSize)}',
+            trailing: _RefreshCacheButton(
+              onPressed: () => ref.read(cacheSizeProvider.notifier).refresh(),
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -479,7 +520,7 @@ class _DesktopCacheSectionState extends State<_DesktopCacheSection> {
             trailing: _ClearCacheButton(
               busy: _clearing,
               onPressed: _clearCache,
-              enabled: _cacheSize > 0,
+              enabled: cacheSize > 0,
             ),
           ),
         ),
@@ -656,18 +697,103 @@ class _DesktopNavItemState extends State<_DesktopNavItem> {
   }
 }
 
+/// 清空缓存确认弹窗（样式与删除文件弹窗一致）
+class _ClearCacheConfirmDialog extends StatelessWidget {
+  const _ClearCacheConfirmDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColorScheme.of(context);
+    final theme = Theme.of(context);
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.red.withValues(alpha: 0.12),
+                ),
+                child: const Icon(
+                  Icons.delete_sweep_outlined,
+                  size: 28,
+                  color: Colors.red,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                '清除缓存',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: colors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '缓存内容中包括文件管理中的信息，清除后需要重新扫描文件。',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colors.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: const Text('取消'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.red,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => Navigator.of(context).pop(true),
+                      child: const Text('清除'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 弹出"清除缓存"确认框
+Future<bool?> _confirmClearCache(BuildContext context) {
+  return showDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const _ClearCacheConfirmDialog(),
+  );
+}
+
 /// 缓存设置组：显示缓存占用大小 + 一键清空缓存
 ///
-/// 打开页面时实时计算缓存大小，清空后自动刷新。
-class _CacheSettingsGroup extends StatefulWidget {
+/// 打开页面时实时计算缓存大小，清空后自动刷新。清空会清除内存/磁盘文件索引、
+/// 临时缓存目录、远程文件列表缓存与媒体时长缓存，并触发重新扫描。
+class _CacheSettingsGroup extends ConsumerStatefulWidget {
   const _CacheSettingsGroup();
 
   @override
-  State<_CacheSettingsGroup> createState() => _CacheSettingsGroupState();
+  ConsumerState<_CacheSettingsGroup> createState() => _CacheSettingsGroupState();
 }
 
-class _CacheSettingsGroupState extends State<_CacheSettingsGroup> {
-  int _cacheSize = 0;
+class _CacheSettingsGroupState extends ConsumerState<_CacheSettingsGroup> {
   bool _clearing = false;
 
   @override
@@ -676,21 +802,37 @@ class _CacheSettingsGroupState extends State<_CacheSettingsGroup> {
     _refreshSize();
   }
 
-  Future<void> _refreshSize() async {
-    final size = await RemoteFileService.instance.getTempCacheSize();
-    if (mounted) setState(() => _cacheSize = size);
-  }
+  Future<void> _refreshSize() =>
+      ref.read(cacheSizeProvider.notifier).refresh();
 
   Future<void> _clearCache() async {
     if (_clearing) return;
+    final confirmed = await _confirmClearCache(context);
+    if (confirmed != true || !context.mounted) return;
     setState(() => _clearing = true);
+    // 清除全部缓存：内存/磁盘文件索引 + 临时目录 + 远程列表 + 媒体时长
+    // 内存与磁盘必须**一致清除**，否则内存里的旧映射指向已删除的磁盘文件，
+    // 缩略图会永远渲染失败（远程设备经 /thumb 接口也会命中旧映射）
+    // 1. 先清远程图片缓存（清空其索引与文件，保持 flutter_cache_manager 状态一致）
+    try {
+      await AppImageCacheManager.instance.emptyCache();
+    } catch (_) {}
+    // 2. 本地文件索引 + 缩略图内存映射（clearAllCaches 内部同步清空 _thumbnailCache）
+    LocalFileService.instance.clearAllCaches();
+    // 3. 清空整个缓存目录（索引、缩略图、ts 合并、临时文件、远程图片）
     await RemoteFileService.instance.clearAllTempFiles();
+    // 4. 远程文件列表 + 媒体时长
+    await FileCacheService.instance.clearAllCaches();
+    MediaDurationService.instance.clearAll();
+    // 5. Flutter 内存图片缓存（避免已解码图片继续占用内存/显示旧内容）
+    PaintingBinding.instance.imageCache.clear();
+    // 触发重新扫描与"仅下载"过滤重算
+    ref.invalidate(fileListProvider);
+    ref.read(downloadedStampProvider.notifier).bump();
     await _refreshSize();
     if (mounted) {
       setState(() => _clearing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('缓存已清空')),
-      );
+      showAppToast(context, '缓存已清空', type: ToastType.success);
     }
   }
 
@@ -708,6 +850,14 @@ class _CacheSettingsGroupState extends State<_CacheSettingsGroup> {
   @override
   Widget build(BuildContext context) {
     final colors = AppColorScheme.of(context);
+    final cacheSize = ref.watch(cacheSizeProvider);
+    // 扫描完成时自动刷新缓存大小：进入页面时扫描可能仍在进行，
+    // 索引/缩略图尚未写盘，此时统计会是 0，扫描结束后需重新统计
+    ref.listen<FileScanState>(fileScanStateProvider, (prev, next) {
+      if (next == FileScanState.done || next == FileScanState.empty) {
+        _refreshSize();
+      }
+    });
     return Column(
       children: [
         _NeuItemCard(
@@ -715,7 +865,10 @@ class _CacheSettingsGroupState extends State<_CacheSettingsGroup> {
             leading: Icon(Icons.cached, size: 22, color: colors.iconSecondary),
             title: AppStrings.cacheData,
             subtitle:
-                '${AppStrings.cacheDataSub}：${_formatSize(_cacheSize)}',
+                '${AppStrings.cacheDataSub}：${_formatSize(cacheSize)}',
+            trailing: _RefreshCacheButton(
+              onPressed: () => ref.read(cacheSizeProvider.notifier).refresh(),
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -731,11 +884,76 @@ class _CacheSettingsGroupState extends State<_CacheSettingsGroup> {
             trailing: _ClearCacheButton(
               busy: _clearing,
               onPressed: _clearCache,
-              enabled: _cacheSize > 0,
+              enabled: cacheSize > 0,
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+/// 缓存数据刷新按钮（点击重新扫描缓存目录计算大小）
+///
+/// 点击后按钮进入 loading 状态并禁用，直到计算完成，避免重复点击。
+class _RefreshCacheButton extends StatefulWidget {
+  final Future<void> Function() onPressed;
+
+  const _RefreshCacheButton({required this.onPressed});
+
+  @override
+  State<_RefreshCacheButton> createState() => _RefreshCacheButtonState();
+}
+
+class _RefreshCacheButtonState extends State<_RefreshCacheButton> {
+  bool _busy = false;
+
+  /// 最小显示时长：保证点击后动画至少停留一段时间，避免扫描太快一闪而过
+  static const Duration _minDuration = Duration(milliseconds: 1000);
+
+  Future<void> _handleTap() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final started = DateTime.now();
+    try {
+      await widget.onPressed();
+    } finally {
+      // 确保 loading 动画至少显示最小时长，防止刷新过快无感知
+      final elapsed = DateTime.now().difference(started);
+      final remain = _minDuration - elapsed;
+      if (remain > Duration.zero) {
+        await Future.delayed(remain);
+      }
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColorScheme.of(context);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _busy ? null : _handleTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: _busy
+                ? CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: colors.iconActive,
+                  )
+                : Icon(
+                    Icons.refresh,
+                    size: 20,
+                    color: colors.iconSecondary,
+                  ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1145,7 +1363,7 @@ void _showSharedContentSheet(BuildContext context, WidgetRef ref) {
         direction: SheetDirection.bottom,
         header: const SheetHeaderConfig(
           title: AppStrings.sharedContent,
-          showCloseButton: true,
+          showCloseButton: false,
         ),
         size: const SheetSizeConfig(
           height: SheetDimension.fraction(0.67),
@@ -1200,31 +1418,29 @@ class _AboutDialog extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
-            Container(
-              decoration: BoxDecoration(
-                color: colors.cardBg,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Column(
-                  children: [
-                    _NeuInfoRow(
-                      label: AppStrings.aboutAppName,
-                      value: AppStrings.appName,
-                    ),
-                    Divider(height: 1, color: colors.divider),
-                    _NeuInfoRow(
-                      label: AppStrings.aboutVersion,
-                      value: AppStrings.appVersion,
-                    ),
-                    Divider(height: 1, color: colors.divider),
-                    _NeuInfoRow(
-                      label: AppStrings.aboutDeviceModel,
-                      value: info?.model ?? '—',
-                    ),
-                  ],
-                ),
+            // 详情表格：液态玻璃质感（参考 tabbar 效果）
+            LiquidGlassContainer(
+              radius: 16,
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              // 表格信息密集首行紧贴顶部，关闭顶部高光避免"玻璃里嵌玻璃"的细边
+              sheen: false,
+              child: Column(
+                children: [
+                  _NeuInfoRow(
+                    label: AppStrings.aboutAppName,
+                    value: AppStrings.appName,
+                  ),
+                  Divider(height: 1, color: colors.divider),
+                  _NeuInfoRow(
+                    label: AppStrings.aboutVersion,
+                    value: AppStrings.appVersion,
+                  ),
+                  Divider(height: 1, color: colors.divider),
+                  _NeuInfoRow(
+                    label: AppStrings.aboutDeviceModel,
+                    value: info?.model ?? '—',
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 20),

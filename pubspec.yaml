@@ -78,6 +78,11 @@ dependencies:
 
   # 网络图片缓存（磁盘持久化缓存，避免重复下载）
   cached_network_image: ^3.4.1
+  # cached_network_image 的底层缓存框架；直接依赖以自定义缓存位置
+  # （统一放入 AppCacheDirectory，保证统计/清理口径一致）
+  flutter_cache_manager: ^3.3.1
+  # 文件系统抽象（实现 flutter_cache_manager 的 FileSystem 接口所需）
+  file: ^7.0.1
 
   # 媒体播放（基于 libmpv，全平台统一支持 Windows/macOS/Linux/Android/iOS/Web）
   # 替代 video_player + just_audio，解决 Windows 端无原生实现的 MissingPluginException
@@ -97,6 +102,11 @@ dependencies:
 
   # 文件路径相关（缓存目录访问）
   path_provider: ^2.1.5
+
+  # 跨平台打开文件夹/链接（桌面 file: 打开资源管理器；Android 唤起系统文件应用）
+  url_launcher: ^6.3.2
+  media_metadata: ^2.2.2
+  
 
 dev_dependencies:
   flutter_test:

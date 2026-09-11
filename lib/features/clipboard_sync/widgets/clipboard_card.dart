@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../shared/widgets/app_toast.dart';
 import '../models/clipboard_item.dart';
 
 class ClipboardCard extends StatelessWidget {
@@ -15,9 +16,7 @@ class ClipboardCard extends StatelessWidget {
       child: InkWell(
         onTap: () {
           Clipboard.setData(ClipboardData(text: item.content));
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('已复制到剪贴板')),
-          );
+          showAppToast(context, '已复制到剪贴板', type: ToastType.info);
         },
         borderRadius: BorderRadius.circular(16),
         child: Padding(

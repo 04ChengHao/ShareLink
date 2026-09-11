@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../shared/widgets/app_toast.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
@@ -7,6 +8,8 @@ import '../../../core/utils/platform_utils.dart';
 import '../../../shared/widgets/neuomorphic_style.dart';
 import '../providers/device_provider.dart';
 import '../services/device_service.dart';
+import '../../file_browser/services/download_service.dart';
+import '../../file_browser/services/file_cache_service.dart';
 import '../widgets/connection_dialog.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/device_list_item.dart';
@@ -98,7 +101,7 @@ Future<void> _connectToDevice(
       ref
           .read(connectionStatesProvider.notifier)
           .set(device.id, DeviceConnectionState.unconnected);
-      _showToast(context, AppStrings.connectFailed);
+      showAppToast(context, AppStrings.connectFailed, type: ToastType.error);
     }
     return;
   }
@@ -127,7 +130,7 @@ Future<void> _showDisconnectDialog(
         .read(connectionStatesProvider.notifier)
         .set(device.id, DeviceConnectionState.unconnected);
     if (!context.mounted) return;
-    _showToast(context, AppStrings.disconnectedToast);
+    showAppToast(context, AppStrings.disconnectedToast, type: ToastType.info);
   }
 }
 
@@ -167,7 +170,7 @@ Future<void> _connectWithDialog(
       ref
           .read(previouslyConnectedDevicesProvider.notifier)
           .onConnected(device, password: result.password);
-      _showToast(context, AppStrings.connectedToast);
+      showAppToast(context, AppStrings.connectedToast, type: ToastType.success);
       break;
     case ConnectResult.authFailed:
       ref
@@ -197,15 +200,6 @@ Future<void> _connectWithDialog(
   }
 }
 
-void _showToast(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(message),
-      duration: const Duration(seconds: 2),
-      behavior: SnackBarBehavior.floating,
-    ),
-  );
-}
 
 /// 确认移除已连接过设备（使用与连接弹窗一致的统一样式）
 Future<void> _confirmRemoveDevice(
@@ -223,6 +217,9 @@ Future<void> _confirmRemoveDevice(
   );
   if (confirmed == true) {
     ref.read(previouslyConnectedDevicesProvider.notifier).remove(device.id);
+    // 移出设备后清除该设备的缓存文件与下载记录，释放空间
+    await FileCacheService.instance.clearCache(device.ip);
+    await DownloadService.instance.clearForDevice(device.name);
   }
 }
 
