@@ -369,20 +369,15 @@ class _DesktopShellState extends ConsumerState<DesktopShell>
                       // ===== 内容层（Logo + 所有图标，交互）=====
                       Column(
                         children: [
-                          // Logo
-                          Container(
-                            width: logoSize,
-                            height: logoSize,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              gradient: const LinearGradient(
-                                colors: [Color(0xFF007AFF), Color(0xFF5AC8FA)],
-                              ),
-                            ),
-                            child: const Icon(
-                              Icons.link,
-                              color: Colors.white,
-                              size: 22,
+                          // Logo（应用图标，与托盘/各平台图标同源）
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.asset(
+                              'assets/app_icon.png',
+                              width: logoSize,
+                              height: logoSize,
+                              fit: BoxFit.cover,
+                              filterQuality: FilterQuality.high,
                             ),
                           ),
                           const Spacer(),

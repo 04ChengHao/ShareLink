@@ -193,12 +193,14 @@ final clipboardSyncProvider = NotifierProvider<ClipboardSyncNotifier, bool>(
 class ClipboardSyncNotifier extends Notifier<bool> {
   @override
   bool build() {
-    return ref.read(sharedPrefsProvider).getBool(StorageKeys.clipboardSync) ??
-        true;
+    // 剪贴板共享功能暂未开发：强制保持关闭。
+    // 不读取历史存储值，避免旧版本残留的 true 让开关显示为开启。
+    return false;
   }
 
   set enabled(bool value) {
-    state = value;
-    ref.read(sharedPrefsProvider).setBool(StorageKeys.clipboardSync, value);
+    // 功能未开发，禁止开启：任何写入都归零，并清掉可能残留的持久化值
+    state = false;
+    ref.read(sharedPrefsProvider).setBool(StorageKeys.clipboardSync, false);
   }
 }

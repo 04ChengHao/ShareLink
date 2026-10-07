@@ -93,6 +93,7 @@ class AppStrings {
   static const String connectionPasswordSub = '连接时需要输入密码';
   static const String sharedContentSub = '选择要共享的内容类型';
   static const String clipboardSyncSub = '跨设备同步剪贴板内容';
+  static const String featureNotDeveloped = '当前功能暂未开发';
 
   // 设置 - 缓存设置
   static const String cacheData = '缓存数据';

@@ -49,7 +49,6 @@ class _MobileSettingsView extends ConsumerWidget {
     final deviceName = ref.watch(deviceNameProvider);
     final acceptConnections = ref.watch(acceptConnectionsProvider);
     final usePassword = ref.watch(usePasswordProvider);
-    final clipboardSync = ref.watch(clipboardSyncProvider);
     final themePref = ref.watch(themePreferenceProvider);
 
     return Scaffold(
@@ -120,11 +119,8 @@ class _MobileSettingsView extends ConsumerWidget {
             ),
             const SizedBox(height: 12),
             _NeuItemCard(
-              child: _NeuSwitchItem(
+              child: _DisabledFeatureSwitch(
                 title: AppStrings.clipboardSync,
-                value: clipboardSync,
-                onChanged: (v) =>
-                    ref.read(clipboardSyncProvider.notifier).enabled = v,
               ),
             ),
             const SizedBox(height: 20),
@@ -372,7 +368,6 @@ class _DesktopSharedSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colors = AppColorScheme.of(context);
-    final clipboardSync = ref.watch(clipboardSyncProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -400,12 +395,9 @@ class _DesktopSharedSection extends ConsumerWidget {
         ),
         const SizedBox(height: 12),
         _NeuItemCard(
-          child: _NeuSwitchItem(
+          child: _DisabledFeatureSwitch(
             title: AppStrings.clipboardSync,
             subtitle: AppStrings.clipboardSyncSub,
-            value: clipboardSync,
-            onChanged: (v) =>
-                ref.read(clipboardSyncProvider.notifier).enabled = v,
           ),
         ),
       ],
@@ -1108,6 +1100,51 @@ class _NeuSwitchItem extends StatelessWidget {
         ),
         GlassSwitch(value: value, onChanged: onChanged),
       ],
+    );
+  }
+}
+
+/// 未开发功能的开关项
+///
+/// 开关恒为关闭，点击不会改变状态，只弹出「当前功能暂未开发」提示。
+/// 带 1 秒熔断：连续点击在 1 秒内被忽略，避免多条 Toast 叠加重叠。
+class _DisabledFeatureSwitch extends StatefulWidget {
+  final String title;
+  final String? subtitle;
+
+  const _DisabledFeatureSwitch({required this.title, this.subtitle});
+
+  @override
+  State<_DisabledFeatureSwitch> createState() => _DisabledFeatureSwitchState();
+}
+
+class _DisabledFeatureSwitchState extends State<_DisabledFeatureSwitch> {
+  /// 熔断窗口：该时刻之前的点击一律忽略
+  DateTime? _blockedUntil;
+
+  void _notifyDisabled() {
+    final now = DateTime.now();
+    final until = _blockedUntil;
+    if (until != null && now.isBefore(until)) return; // 熔断中
+    _blockedUntil = now.add(const Duration(seconds: 1));
+    showAppToast(
+      context,
+      AppStrings.featureNotDeveloped,
+      type: ToastType.warning,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _notifyDisabled,
+      child: _NeuSwitchItem(
+        title: widget.title,
+        subtitle: widget.subtitle,
+        value: false,
+        onChanged: (_) => _notifyDisabled(),
+      ),
     );
   }
 }

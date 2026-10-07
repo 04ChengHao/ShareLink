@@ -1016,16 +1016,31 @@ class LocalFileService implements FileService {
   /// 旧索引中经弱校验（仅探时长）通过的合并项需强制重新校验。
   static const int _indexVersion = 2;
 
+  /// 在后台 Isolate 中读取并解码索引文件。
+  ///
+  /// 必须写成静态方法：闭包若定义在实例方法内会连带捕获本实例
+  /// （含 [_loadFuture] 这类不可 sendable 的对象），
+  /// 导致 `Illegal argument in isolate message: object is unsendable`。
+  static dynamic _readIndexFileSync(String path) {
+    final f = File(path);
+    if (!f.existsSync()) return null;
+    return jsonDecode(f.readAsStringSync());
+  }
+
+  /// 在后台 Isolate 中编码并写入索引文件（静态，理由同上）。
+  static void _writeIndexFileSync(String path, Object payload) {
+    File(path).writeAsStringSync(jsonEncode(payload), flush: true);
+  }
+
   Future<void> _loadFromDisk() async {
     try {
       final dir = await AppCacheDirectory.root;
       final path = '${dir.path}${Platform.pathSeparator}$_indexFileName';
-      // 大索引（数 MB JSON）的读取 + 解码放到后台 Isolate，避免阻塞 UI 线程
-      final dynamic decoded = await Isolate.run(() {
-        final f = File(path);
-        if (!f.existsSync()) return null;
-        return jsonDecode(f.readAsStringSync());
-      });
+      // 大索引（数 MB JSON）的读取 + 解码放到后台 Isolate，避免阻塞 UI 线程。
+      // 必须调用静态方法：若在闭包里直接写 IO，闭包会连带捕获本实例
+      // （含 _loadFuture 等不可 sendable 对象），抛
+      // "Illegal argument in isolate message: object is unsendable"。
+      final dynamic decoded = await Isolate.run(() => _readIndexFileSync(path));
       if (decoded == null) return;
       final map = decoded as Map<String, dynamic>;
       final verified = (map['verified'] as List<dynamic>? ?? [])
@@ -1085,10 +1100,9 @@ class LocalFileService implements FileService {
         'rejectedTs': _rejectedTs,
         'items': _pathCache.values.map(_fileItemToJson).toList(),
       };
-      // 大列表 JSON 编码（可达数十 MB 字符串构建）放到后台 Isolate，避免掉帧
-      await Isolate.run(() {
-        File(path).writeAsStringSync(jsonEncode(payload), flush: true);
-      });
+      // 大列表 JSON 编码（可达数十 MB 字符串构建）放到后台 Isolate，避免掉帧。
+      // 同样调用静态方法，payload 为纯数据（深拷贝进 Isolate 即可）。
+      await Isolate.run(() => _writeIndexFileSync(path, payload));
     } catch (e) {
       debugPrint('[LocalCache] 保存本地文件索引失败: $e');
     }

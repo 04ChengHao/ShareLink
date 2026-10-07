@@ -17,9 +17,10 @@ class TrayService with TrayListener {
   ///
   /// Windows 的 LoadImage(IMAGE_ICON, LR_LOADFROMFILE) 仅支持 .ico/.bmp 格式，
   /// 不支持 .png，因此 Windows 使用 .ico 文件。
-  /// macOS 通过 rootBundle 加载为 base64，支持 .png。
+  /// macOS / Linux 通过 rootBundle 加载，支持 .png。
+  /// 该文件同时作为桌面端应用内侧边栏的 Logo 使用。
   static final String _kTrayIconPath =
-      Platform.isWindows ? 'assets/tray_icon.ico' : 'assets/tray_icon.png';
+      Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png';
 
   bool _initialized = false;
 
