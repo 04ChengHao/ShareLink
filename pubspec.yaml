@@ -7,7 +7,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # The following defines the version and build number for your application.
 # A version number is three numbers separated by dots, like 1.2.43
 # followed by an optional build number separated by a +.
-version: 0.1.0+1
+version: 1.0.0+1
 
 environment:
   sdk: ^3.12.2
@@ -16,26 +16,11 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # iOS style icons
-  cupertino_icons: ^1.0.8
-
-  # SMB 局域网文件访问
-  dart_smb2: ^0.1.1
-
-  # 剪贴板监听与操作（官方维护，支持文本/富文本/图片 + 原生监听）
-  # clipboard: ^3.0.14
-
-  # 跨设备传输剪贴板内容 / 系统分享
-  share_plus: ^13.1.0
-
   # WebSocket 实时通信
   web_socket_channel: ^3.0.3
 
   # 网络信息
   network_info_plus: ^8.2.1
-
-  # mDNS 服务发现
-  multicast_dns: ^0.3.3+1
 
   # 状态管理
   flutter_riverpod: ^3.4.2

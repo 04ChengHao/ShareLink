@@ -23,20 +23,6 @@ const commonFileExtensions = [
   'apk', 'exe', 'dmg', 'iso',
 ];
 
-/// 可选分类图标
-const categoryIcons = [
-  Icons.image, Icons.video_file, Icons.audio_file, Icons.description,
-  Icons.table_chart, Icons.slideshow, Icons.picture_as_pdf,
-  Icons.folder_zip, Icons.code, Icons.android, Icons.folder,
-  Icons.photo_library, Icons.movie, Icons.music_note, Icons.book,
-  Icons.archive, Icons.insert_drive_file, Icons.folder_open,
-  Icons.work, Icons.school, Icons.business, Icons.home,
-  Icons.star, Icons.favorite, Icons.lightbulb, Icons.flight,
-  Icons.shopping_bag, Icons.sports, Icons.restaurant, Icons.pets,
-  Icons.computer, Icons.phone, Icons.tablet, Icons.watch,
-  Icons.camera, Icons.headphones, Icons.gamepad, Icons.newspaper,
-];
-
 /// 添加分类表单（桌面抽屉和手机弹窗共用）
 class AddCategoryForm extends ConsumerStatefulWidget {
   /// 保存成功回调，传入分类名称

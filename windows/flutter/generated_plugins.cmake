@@ -10,7 +10,6 @@ list(APPEND FLUTTER_PLUGIN_LIST
   permission_handler_windows
   screen_brightness_windows
   screen_retriever_windows
-  share_plus
   tray_manager
   url_launcher_windows
   volume_controller
@@ -18,7 +17,6 @@ list(APPEND FLUTTER_PLUGIN_LIST
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
-  dart_smb2
   jni
 )
 

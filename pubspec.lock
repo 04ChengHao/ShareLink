@@ -145,22 +145,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "3.0.7"
-  cupertino_icons:
-    dependency: "direct main"
-    description:
-      name: cupertino_icons
-      sha256: "41e005c33bd814be4d3096aff55b1908d419fde52ca656c8c47719ec745873cd"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "1.0.9"
-  dart_smb2:
-    dependency: "direct main"
-    description:
-      name: dart_smb2
-      sha256: fc370bc731f9d15a3c6f505338bddd02c284005d4a2eea18cd6ddad64616f674
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.1.1"
   dbus:
     dependency: transitive
     description:
@@ -576,14 +560,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "2.0.0"
-  multicast_dns:
-    dependency: "direct main"
-    description:
-      name: multicast_dns
-      sha256: "134668a9605c747322d8c3eb0e89a4c0cbdedb29f8d2d5ae29d14daef724987b"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.3.3+1"
   network_info_plus:
     dependency: "direct main"
     description:
@@ -952,22 +928,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.2.2"
-  share_plus:
-    dependency: "direct main"
-    description:
-      name: share_plus
-      sha256: "34f00f9becd2743c1fb05363d624f9f70d37f7ccdcdda47450bc0b8c9d327b8c"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "13.3.0"
-  share_plus_platform_interface:
-    dependency: transitive
-    description:
-      name: share_plus_platform_interface
-      sha256: "365ef7379fc22507256adda3385152942ffce08935452bc972c2e52a0bebae41"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "7.2.0"
   shared_preferences:
     dependency: "direct main"
     description:
